@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Sales Lead Time & Extrusion Portal</title>
+  
+  <!-- Tailwind CSS & React via browser CDNs (Zero installs needed) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script type="importmap">
+  {
+    "imports": {
+      "react": "https://esm.sh/react@18.2.0",
+      "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+      "lucide-react": "https://esm.sh/lucide-react@0.344.0"
+    }
+  }
+  </script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-slate-50 text-slate-900 font-sans">
+  <div id="root"></div>
+
+  <script type="text/babel" data-type="module">
+    import React, { useState, useMemo, useEffect } from 'react';
+    import ReactDOM from 'react-dom/client';
+    import {
+      Search, Clock, Calendar, CheckCircle2, AlertTriangle, AlertCircle,
+      Package, Truck, Layers, Wrench, Plus, Edit2, Trash2,
+      FileText, Sparkles, X, Info, ShieldCheck, MapPin, Flame,
+      Bookmark, Gauge, Zap, Activity
+    } from 'lucide-react';
+
+    // =========================================================================
+    // PASTE YOUR GOOGLE APPS SCRIPT URL HERE (WITH ?action=leadtime AT THE END)
+    // =========================================================================
+    const API_URL = "https://script.google.com/macros/s/AKfycby.../exec?action=leadtime";
+
+    function App() {
+      const [data, setData] = useState(null);
+      const [loading, setLoading] = useState(true);
+      const [loadError, setLoadError] = useState(null);
+      const [activeTab, setActiveTab] = useState('calculator');
+
+      // Inquiry States
+      const [searchQuery, setSearchQuery] = useState('');
+      const [selectedPartId, setSelectedPartId] = useState(null);
+      const [inquiredQty, setInquiredQty] = useState(1000);
+      const [customerName, setCustomerName] = useState('');
+      const [isRushOrder, setIsRushOrder] = useState(false);
+      const [ruleOverride, setRuleOverride] = useState('auto');
+      const [quoteAsOfDate, setQuoteAsOfDate] = useState(() => {
+        const now = new Date();
+        return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      });
+
+      // Fetch live data from Google Sheets
+      useEffect(() => {
+        fetch(API_URL)
+          .then(res => {
+            if (!res.ok) throw new Error("HTTP error " + res.status);
+            return res.json();
+          })
+          .then(json => {
+            setData(json);
+            setLoading(false);
+          })
+          .catch(err => {
+            console.error("Error loading sheet data:", err);
+            setLoadError(err.toString());
+            setLoading(false);
+          });
+      }, []);
+
+      // Date & Business Day Helpers
+      const parseSafeDate = (dStr) => {
+        if (!dStr || typeof dStr !== 'string') return null;
+        const parts = dStr.split('T')[0].split('-');
+        if (parts.length === 3) {
+          const y = parseInt(parts[0], 10), m = parseInt(parts[1], 10), d = parseInt(parts[2], 10);
+          if (!isNaN(y) && !isNaN(m) && !isNaN(d)) return new Date(y, m - 1, d);
+        }
+        return null;
+      };
+
+      const formatSafeDate = (d) => {
+        if (!d || !(d instanceof Date) || isNaN(d.getTime())) return '—';
+        return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      };
+
+      const addBusinessDays = (startDate, days) => {
+        const d = new Date(startDate.getTime());
+        let added = 0;
+        while (added < days) {
+          d.setDate(d.getDate() + 1);
+          const day = d.getDay();
+          if (day !== 0 && day !== 6) added++;
+        }
+        return d;
+      };
+
+      const countBusinessDays = (startDate, endDate) => {
+        if (!startDate || !endDate) return 1;
+        let count = 0;
+        const cur = new Date(startDate.getTime());
+        cur.setHours(0, 0, 0, 0);
+        const end = new Date(endDate.getTime());
+        end.setHours(0, 0, 0, 0);
+        while (cur < end) {
+          cur.setDate(cur.getDate() + 1);
+          const day = cur.getDay();
+          if (day !== 0 && day !== 6) count++;
+        }
+        return Math.max(1, count);
+      };
+
+      const addContinuousExtrusionWithFreightPickup = (startDate, continuousDays) => {
+        const d = new Date(startDate.getTime());
+        const daysToAdd = Math.max(1, Math.ceil(continuousDays));
+        d.setDate(d.getDate() + daysToAdd);
+        const dayOfWeek = d.getDay();
+        let freightRollDays = 0;
+        if (dayOfWeek === 6) { d.setDate(d.getDate() + 2); freightRollDays = 2; }
+        else if (dayOfWeek === 0) { d.setDate(d.getDate() + 1); freightRollDays = 1; }
+        return { dispatchDate: d, totalCalendarDays: daysToAdd + freightRollDays, freightRollDays };
+      };
+
+      const extractBaseDie = (codeStr) => {
+        if (!codeStr || typeof codeStr !== 'string') return '';
+        const clean = codeStr.trim().toUpperCase();
+        const rdMatch = clean.match(/^(RD-\d{2,4})/i);
+        if (rdMatch) return rdMatch[1].toUpperCase();
+        const compoundMatch = clean.match(/^([A-Z0-9]{2,5}-\d{2,4}(?:CR|BC|R|S))\b/i);
+        if (compoundMatch) return compoundMatch[1].toUpperCase();
+        const stdMatch = clean.match(/^([A-Z0-9]{2,5}-\d{2,4})/i);
+        if (stdMatch) return stdMatch[1].toUpperCase();
+        const prefixMatch = clean.match(/^([A-Z0-9]+-[A-Z0-9]+)/i);
+        return prefixMatch ? prefixMatch[1].toUpperCase() : clean.split(/[^A-Z0-9-]/)[0] || clean;
+      };
+
+      // Range extraction
+      const salesRange = data?.find(d => d.name === 'Sales 2.0') || data?.[0];
+      const inspRange = data?.find(d => d.name === 'Inspection Sheet') || data?.[4];
+      const ratesRange = data?.find(d => d.name === 'RatesByProfile') || data?.[3];
+
+      // Parse Inventory
+      const inventoryList = useMemo(() => {
+        if (!salesRange?.data) return [];
+        return salesRange.data.filter(r => r.index_ > 0 && r.row && (r.row[1] || r.row[0])).map(r => {
+          const partNumber = String(r.row[1] || '').trim();
+          const sage = String(r.row[0] || '').trim();
+          return {
+            id: `${r.index_}-${partNumber}`,
+            partNumber: partNumber || sage,
+            sage: sage || partNumber,
+            uom: String(r.row[2] || 'FEET').trim().toUpperCase(),
+            length: parseFloat(r.row[3]) || 120,
+            qtyAvailable: parseFloat(r.row[5]) || 0,
+            loc1: r.row[7] ? String(r.row[7]).trim() : '',
+            inferredDie: extractBaseDie(partNumber || sage)
+          };
+        });
+      }, [salesRange]);
+
+      // Parse Inspection Sheet
+      const inspectionLinesList = useMemo(() => {
+        if (!inspRange?.data) return [];
+        return inspRange.data.filter(r => r.index_ >= 3 && r.row && (r.row[5] || r.row[4] || r.row[2])).map(r => {
+          const lineNum = r.row[2] != null ? String(r.row[2]).trim() : '';
+          const partNum = r.row[4] ? String(r.row[4]).trim() : '';
+          const dieNum = r.row[5] ? String(r.row[5]).trim() : '';
+          const resin = r.row[10] != null ? String(r.row[10]).trim() : '';
+          const color = r.row[11] != null ? String(r.row[11]).trim() : '';
+          const inHr = parseFloat(r.row[14]) || 0;
+          const hasResin = Boolean(resin && !['#N/A', 'N/A', '—', '-'].includes(resin.toUpperCase()));
+          const hasSpeed = inHr > 0;
+          return {
+            lineNum,
+            partNum,
+            dieNum,
+            resin,
+            color,
+            inHr,
+            hasResin,
+            hasSpeed,
+            isActive: hasResin && hasSpeed
+          };
+        });
+      }, [inspRange]);
+
+      // Active Inspection Lines Count
+      const activeLineStats = useMemo(() => {
+        const total = inspectionLinesList.length || 65;
+        const active = inspectionLinesList.filter(l => l.isActive).length;
+        return { active, total };
+      }, [inspectionLinesList]);
+
+      // Selected SKU
+      useEffect(() => {
+        if (!selectedPartId && inventoryList.length > 0) setSelectedPartId(inventoryList[0].id);
+      }, [inventoryList, selectedPartId]);
+
+      const selectedItem = useMemo(() => {
+        return inventoryList.find(i => i.id === selectedPartId) || inventoryList[0] || null;
+      }, [inventoryList, selectedPartId]);
+
+      // Check if die is actively in-line
+      const liveInspectionInfo = useMemo(() => {
+        if (!selectedItem) return null;
+        const die = extractBaseDie(selectedItem.partNumber).toUpperCase();
+        const pn = selectedItem.partNumber.toUpperCase();
+        return inspectionLinesList.find(l => {
+          if (!l.isActive) return false;
+          const lDie = extractBaseDie(l.dieNum || l.partNum);
+          return lDie === die || (l.partNum && l.partNum.toUpperCase() === pn);
+        }) || null;
+      }, [selectedItem, inspectionLinesList]);
+
+      // Lead Time Calculation
+      const calc = useMemo(() => {
+        if (!selectedItem) return null;
+        const available = selectedItem.qtyAvailable || 0;
+        const requested = Number(inquiredQty) || 1;
+        const asOf = parseSafeDate(quoteAsOfDate) || new Date();
+        const isDieCurrentlyLiveOnLine = Boolean(liveInspectionInfo);
+
+        let rateInHr = liveInspectionInfo?.inHr || 120; // default 120 in/hr
+        const rateFtHr = rateInHr / 12;
+        const effectiveInches = requested * 12;
+        const machineRunHours = effectiveInches / rateInHr;
+        const continuousRunDays = Math.max(1, Math.ceil(machineRunHours / 24));
+
+        let wholeTargetShipDateMin, wholeTargetShipDateMax;
+        let wholeDaysMin, wholeDaysMax;
+
+        if (available >= requested) {
+          wholeDaysMin = 1;
+          wholeDaysMax = isRushOrder ? 1 : 2;
+          wholeTargetShipDateMin = addBusinessDays(asOf, wholeDaysMin);
+          wholeTargetShipDateMax = addBusinessDays(asOf, wholeDaysMax);
+        } else if (isDieCurrentlyLiveOnLine && ruleOverride !== 'cold_die') {
+          const freightMin = addContinuousExtrusionWithFreightPickup(asOf, continuousRunDays);
+          const freightMax = addContinuousExtrusionWithFreightPickup(asOf, continuousRunDays + (isRushOrder ? 1 : 2));
+          wholeTargetShipDateMin = freightMin.dispatchDate;
+          wholeTargetShipDateMax = freightMax.dispatchDate;
+          wholeDaysMin = countBusinessDays(asOf, wholeTargetShipDateMin);
+          wholeDaysMax = countBusinessDays(asOf, wholeTargetShipDateMax);
+        } else {
+          // Offline Die: 10 business days setup + 24/7 continuous run
+          const setupEndDate = addBusinessDays(asOf, 10);
+          const freightMin = addContinuousExtrusionWithFreightPickup(setupEndDate, continuousRunDays);
+          const freightMax = addContinuousExtrusionWithFreightPickup(setupEndDate, continuousRunDays + (isRushOrder ? 1 : 2));
+          wholeTargetShipDateMin = freightMin.dispatchDate;
+          wholeTargetShipDateMax = freightMax.dispatchDate;
+          wholeDaysMin = countBusinessDays(asOf, wholeTargetShipDateMin);
+          wholeDaysMax = countBusinessDays(asOf, wholeTargetShipDateMax);
+        }
+
+        return {
+          rateFtHr,
+          rateInHr,
+          wholeDaysMin,
+          wholeDaysMax,
+          wholeTargetShipDateMax,
+          isDieCurrentlyLiveOnLine,
+          liveLineInfo: liveInspectionInfo,
+          isOfflineDie: !isDieCurrentlyLiveOnLine,
+          available,
+          requested
+        };
+      }, [selectedItem, inquiredQty, quoteAsOfDate, isRushOrder, ruleOverride, liveInspectionInfo]);
+
+      if (loading) {
+        return (
+          <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 text-center">
+            <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-3"></div>
+            <h2 className="text-base font-bold text-slate-800">Connecting to Master Inventory...</h2>
+            <p className="text-xs text-slate-500 mt-1">Fetching live warehouse stock & shop floor line speeds.</p>
+          </div>
+        );
+      }
+
+      if (loadError) {
+        return (
+          <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 text-center">
+            <div className="bg-rose-50 text-rose-800 p-4 rounded-xl border border-rose-200 max-w-md">
+              <h2 className="text-sm font-bold">Failed to load Google Sheets API</h2>
+              <p className="text-xs mt-1 text-rose-600">{loadError}</p>
+              <p className="text-[11px] mt-2 text-slate-500">Check that your Google Apps Script is deployed with "Anyone" access.</p>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="min-h-screen bg-slate-50 text-slate-900 font-sans flex flex-col">
+          {/* Header */}
+          <header className="bg-white border-b border-slate-200 px-6 py-4 shadow-sm">
+            <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="bg-blue-600 text-white p-2.5 rounded-xl shadow-sm">
+                  <Clock className="w-6 h-6" />
+                </div>
+                <div>
+                  <h1 className="text-xl font-bold tracking-tight">Sales Lead Time Portal</h1>
+                  <p className="text-xs text-slate-500">24/7 Continuous Extrusion • Mon–Fri Freight Dock Pickup</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="bg-amber-50 text-amber-800 px-3 py-1.5 rounded-lg border border-amber-200 text-xs font-bold flex items-center gap-1.5">
+                  <Activity className="w-4 h-4 text-amber-600" />
+                  <span>{activeLineStats.active} of {activeLineStats.total} Lines Active</span>
+                </div>
+              </div>
+            </div>
+          </header>
+
+          {/* Main Portal */}
+          <main className="max-w-7xl mx-auto w-full p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 flex-1">
+            {/* Left: Search & Inputs */}
+            <div className="lg:col-span-5 space-y-4">
+              <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+                <div>
+                  <label className="text-xs font-bold text-slate-700 block mb-1">Search Profile / SKU:</label>
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={e => setSearchQuery(e.target.value)}
+                    placeholder="e.g. RD-112, PC-117, AG-405..."
+                    className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-blue-500 font-medium"
+                  />
+                  {searchQuery && (
+                    <div className="mt-2 border rounded-lg max-h-48 overflow-y-auto divide-y bg-slate-50">
+                      {inventoryList
+                        .filter(i => i.partNumber.toLowerCase().includes(searchQuery.toLowerCase()))
+                        .slice(0, 6)
+                        .map(item => (
+                          <div
+                            key={item.id}
+                            onClick={() => { setSelectedPartId(item.id); setSearchQuery(''); }}
+                            className="p-2 text-xs cursor-pointer hover:bg-blue-50 flex justify-between"
+                          >
+                            <span className="font-bold text-slate-800">{item.partNumber}</span>
+                            <span className="text-slate-500">{item.qtyAvailable} {item.uom} on hand</span>
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                </div>
+
+                {selectedItem && (
+                  <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 text-xs space-y-1.5">
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Selected SKU:</span>
+                      <strong className="text-slate-900">{selectedItem.partNumber}</strong>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Base Die:</span>
+                      <strong className="text-indigo-700">{selectedItem.inferredDie}</strong>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Warehouse Stock:</span>
+                      <strong className="text-emerald-700">{selectedItem.qtyAvailable} {selectedItem.uom}</strong>
+                    </div>
+                    <div className="flex justify-between border-t pt-1.5">
+                      <span className="text-slate-500">Inspection Status:</span>
+                      {calc?.isDieCurrentlyLiveOnLine ? (
+                        <span className="font-bold text-emerald-800">In Line on Line #{calc.liveLineInfo.lineNum} ({calc.liveLineInfo.color})</span>
+                      ) : (
+                        <span className="font-bold text-amber-800">Not In Line (10 Bus. Days Setup)</span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                <div>
+                  <label className="text-xs font-bold text-slate-700 block mb-1">Inquiry Quantity ({selectedItem?.uom || 'FEET'}):</label>
+                  <input
+                    type="number"
+                    value={inquiredQty}
+                    onChange={e => setInquiredQty(e.target.value)}
+                    className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg font-bold"
+                  />
+                </div>
+
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => setIsRushOrder(!isRushOrder)}
+                    className={`w-full py-2 text-xs font-bold rounded-lg border transition-colors ${
+                      isRushOrder ? 'bg-amber-500 text-white border-amber-600' : 'bg-slate-100 text-slate-700'
+                    }`}
+                  >
+                    {isRushOrder ? '🔥 Rush Expedited Active' : 'Standard Priority'}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Right: Lead Time Verdict */}
+            <div className="lg:col-span-7">
+              {calc && selectedItem && (
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
+                  <div className="flex items-center justify-between border-b pb-4">
+                    <div>
+                      <span className="text-[10px] uppercase font-bold text-blue-600 tracking-wider">Primary Delivery Commitment</span>
+                      <h2 className="text-2xl font-black text-slate-900 mt-1">
+                        {calc.wholeDaysMin === calc.wholeDaysMax ? `${calc.wholeDaysMin} Business Day` : `${calc.wholeDaysMin} - ${calc.wholeDaysMax} Business Days`}
+                      </h2>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-[10px] uppercase font-bold text-slate-400 block">Est. Freight Dispatch</span>
+                      <span className="text-lg font-bold text-indigo-700 font-mono">{formatSafeDate(calc.wholeTargetShipDateMax)}</span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
+                    <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
+                      <span className="text-slate-400 block text-[10px] uppercase">Extrusion Speed</span>
+                      <strong className="text-sm font-bold text-slate-900">{calc.rateFtHr.toFixed(1)} ft/hr</strong>
+                      <span className="text-[10px] text-slate-500 block">({calc.rateInHr} in/hr)</span>
+                    </div>
+                    <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
+                      <span className="text-slate-400 block text-[10px] uppercase">Tooling Staging</span>
+                      <strong className="text-sm font-bold text-slate-900">
+                        {calc.isOfflineDie ? '10 Business Days' : '0.5 hrs (Hot In-Line)'}
+                      </strong>
+                      <span className="text-[10px] text-slate-500 block">{calc.isOfflineDie ? 'Offline die setup & heat' : 'Mounted on active line'}</span>
+                    </div>
+                    <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
+                      <span className="text-slate-400 block text-[10px] uppercase">Extrusion Schedule</span>
+                      <strong className="text-sm font-bold text-emerald-700">24/7 Continuous</strong>
+                      <span className="text-[10px] text-slate-500 block">Runs over weekends</span>
+                    </div>
+                  </div>
+
+                  <div className="p-4 bg-slate-50 rounded-xl border text-xs text-slate-600 space-y-1">
+                    <span className="font-bold text-slate-800 block">Extrusion Schedule Logic:</span>
+                    <p>
+                      {calc.isOfflineDie
+                        ? `Tooling die (${selectedItem.inferredDie}) is offline. It requires a baseline 10 business days (two full weeks) setup and heating window before continuous 24/7 extrusion begins.`
+                        : `Tooling die (${selectedItem.inferredDie}) is actively running on Line #${calc.liveLineInfo.lineNum} in ${calc.liveLineInfo.color}. Setup delay is waived.`}
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      Extrusion runs 24 hours a day, 7 days a week. Final dispatch aligns with Monday–Friday freight dock pickup.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </main>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
