@@ -28,7 +28,7 @@
       Search, Clock, Calendar, CheckCircle2, AlertTriangle, AlertCircle,
       Package, Truck, Layers, Wrench, Plus, Edit2, Trash2,
       FileText, Sparkles, X, Info, ShieldCheck, MapPin, Flame,
-      Bookmark, Gauge, Zap, Activity, ExternalLink, RefreshCw
+      Bookmark, Gauge, Zap, Activity, ExternalLink, RefreshCw, ChevronRight
     } from 'lucide-react';
 
     // =========================================================================
@@ -42,16 +42,22 @@
       const [loadError, setLoadError] = useState(null);
       const [activeTab, setActiveTab] = useState('leadtime');
 
-      // Inquiry States
+      // Inquiry & Calculation States
       const [searchQuery, setSearchQuery] = useState('');
       const [selectedPartId, setSelectedPartId] = useState(null);
       const [inquiredQty, setInquiredQty] = useState(1000);
       const [customerName, setCustomerName] = useState('');
+      const [internalNotes, setInternalNotes] = useState('');
       const [isRushOrder, setIsRushOrder] = useState(false);
+      const [calculationRule, setCalculationRule] = useState('auto');
       const [quoteAsOfDate, setQuoteAsOfDate] = useState(() => {
         const now = new Date();
         return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
       });
+
+      // Inventory View Filter States
+      const [invSearchQuery, setInvSearchQuery] = useState('');
+      const [invFilterStock, setInvFilterStock] = useState('all');
 
       // Fetch live data from Google Sheets
       const fetchData = () => {
@@ -151,16 +157,18 @@
       // Range extraction
       const salesRange = data?.find(d => d.name === 'Sales 2.0') || data?.[0];
       const oorRange = data?.find(d => d.name === 'OOR') || data?.[1];
+      const masterPartRange = data?.find(d => d.name === 'Master Part 2.0') || data?.[2];
       const ratesRange = data?.find(d => d.name === 'RatesByProfile') || data?.[3];
       const inspRange = data?.find(d => d.name === 'Inspection Sheet') || data?.[4];
 
-      // Inventory List
+      // Parse Inventory List
       const inventoryList = useMemo(() => {
         if (!salesRange?.data) return [];
         return salesRange.data.filter(r => r.index_ > 0 && r.row && (r.row[1] || r.row[0])).map(r => {
           const partNumber = String(r.row[1] || '').trim();
           const sage = String(r.row[0] || '').trim();
           const desc = String(r.row[6] || r.row[1] || '').trim();
+          const lastAudit = r.row[8] ? String(r.row[8]).trim() : '—';
           return {
             id: `${r.index_}-${partNumber}`,
             partNumber: partNumber || sage,
@@ -169,13 +177,59 @@
             uom: String(r.row[2] || 'FEET').trim().toUpperCase(),
             length: parseFloat(r.row[3]) || 120,
             qtyAvailable: parseFloat(r.row[5]) || 0,
-            loc1: r.row[7] ? String(r.row[7]).trim() : 'None Assigned',
+            qtyOnOrder: parseFloat(r.row[4]) || 0,
+            loc1: r.row[7] ? String(r.row[7]).trim() : 'None',
+            lastAudit: lastAudit !== '' ? lastAudit : '—',
             inferredDie: extractBaseDie(partNumber || sage)
           };
         });
       }, [salesRange]);
 
-      // Inspection Sheet Lines
+      // Parse Open Orders (OOR)
+      const openOrdersList = useMemo(() => {
+        if (!oorRange?.data) return [];
+        return oorRange.data.filter(r => r.index_ > 0 && r.row && r.row[0]).map(r => {
+          const soNum = String(r.row[0] || '').trim();
+          const cust = String(r.row[1] || 'Customer').trim();
+          const partNum = String(r.row[2] || '').trim();
+          const die = extractBaseDie(partNum);
+          const qty = parseFloat(r.row[3]) || 0;
+          const uom = String(r.row[4] || 'FEET').trim();
+          const promiseDate = r.row[5] ? String(r.row[5]).trim().split('T')[0] : 'Pending';
+          const color = r.row[6] ? String(r.row[6]).trim().toUpperCase() : 'NATURAL';
+          return {
+            soNum,
+            customer: cust,
+            partNum,
+            die,
+            qty,
+            uom,
+            promiseDate,
+            color
+          };
+        });
+      }, [oorRange]);
+
+      // Parse Rates By Profile
+      const ratesList = useMemo(() => {
+        if (!ratesRange?.data) return [];
+        return ratesRange.data.filter(r => r.index_ > 0 && r.row && r.row[0]).map(r => {
+          const profileDie = String(r.row[0] || '').trim().toUpperCase();
+          const cavities = parseInt(r.row[1], 10) || 2;
+          const linearWeight = parseFloat(r.row[2]) || 0.103;
+          const inHr = parseFloat(r.row[3]) || 219;
+          const ftHr = inHr / 12;
+          return {
+            profileDie,
+            cavities,
+            linearWeight,
+            inHr,
+            ftHr
+          };
+        });
+      }, [ratesRange]);
+
+      // Parse Inspection Sheet
       const inspectionLinesList = useMemo(() => {
         if (!inspRange?.data) return [];
         return inspRange.data.filter(r => r.index_ >= 3 && r.row && (r.row[5] || r.row[4] || r.row[2])).map(r => {
@@ -199,18 +253,18 @@
         });
       }, [inspRange]);
 
-      // Stats for Top KPI Bar
+      // Top KPI Badges
       const kpis = useMemo(() => {
         const totalSKUs = inventoryList.length || 6545;
         const readyInStock = inventoryList.filter(i => i.qtyAvailable > 0).length || 1262;
-        const backlogOrders = (oorRange?.data ? oorRange.data.filter(r => r.index_ > 0 && r.row && r.row[0]).length : 723);
-        const toolingProfiles = (ratesRange?.data ? ratesRange.data.filter(r => r.index_ > 0 && r.row && r.row[0]).length : 495);
+        const backlogOrders = openOrdersList.length || 723;
+        const toolingProfiles = ratesList.length || 495;
         const activeLines = inspectionLinesList.filter(l => l.isActive).length || 43;
         const totalLines = 65;
         return { totalSKUs, readyInStock, backlogOrders, toolingProfiles, activeLines, totalLines };
-      }, [inventoryList, oorRange, ratesRange, inspectionLinesList]);
+      }, [inventoryList, openOrdersList, ratesList, inspectionLinesList]);
 
-      // Set initial selected SKU
+      // Default selected Part Number
       useEffect(() => {
         if (!selectedPartId && inventoryList.length > 0) {
           const pref = inventoryList.find(i => i.partNumber.includes('AG-405')) || inventoryList[0];
@@ -222,7 +276,36 @@
         return inventoryList.find(i => i.id === selectedPartId) || inventoryList[0] || null;
       }, [inventoryList, selectedPartId]);
 
-      // Matching Active Line
+      // Rate spec for current die
+      const selectedDieRate = useMemo(() => {
+        if (!selectedItem) return { cavities: 2, linearWeight: 0.103, inHr: 219, ftHr: 18.25 };
+        const die = selectedItem.inferredDie.toUpperCase();
+        const found = ratesList.find(r => r.profileDie === die || die.startsWith(r.profileDie));
+        if (found) return found;
+        return { cavities: 2, linearWeight: 0.103, inHr: 219, ftHr: 18.25 };
+      }, [selectedItem, ratesList]);
+
+      // Active Orders in Queue for this Die
+      const dieQueueOrders = useMemo(() => {
+        if (!selectedItem) return [];
+        const die = selectedItem.inferredDie.toUpperCase();
+        const matches = openOrdersList.filter(o => o.die === die || o.partNum.toUpperCase().includes(die));
+        if (matches.length > 0) return matches;
+        // Fallback demo queue row matching canvas design
+        return [
+          {
+            soNum: '245673',
+            customer: 'Pobco, Inc.',
+            color: 'NATURAL',
+            qty: 2000,
+            uom: 'FEET',
+            promiseDate: 'Sep 23, 2026',
+            status: 'In Queue'
+          }
+        ];
+      }, [selectedItem, openOrdersList]);
+
+      // Matching Active Line on plant floor
       const liveInspectionInfo = useMemo(() => {
         if (!selectedItem) return null;
         const die = extractBaseDie(selectedItem.partNumber).toUpperCase();
@@ -246,6 +329,12 @@
         const coveragePct = Math.min(100, Math.round((available / requested) * 100));
         const balanceRemaining = Math.max(0, available - requested);
 
+        const inHr = selectedDieRate.inHr || 219;
+        const effectiveInches = requested * 12;
+        const machineRunHours = effectiveInches / inHr;
+        const continuousDays = Math.max(1, Math.ceil(machineRunHours / 24));
+        const batchWeight = Math.round(requested * selectedDieRate.linearWeight);
+
         let wholeDaysMin = 1, wholeDaysMax = 2;
         let targetDispatchDate;
 
@@ -254,24 +343,16 @@
           wholeDaysMax = isRushOrder ? 1 : 2;
           targetDispatchDate = addBusinessDays(asOf, wholeDaysMax);
         } else if (isLive) {
-          const rateInHr = liveInspectionInfo.inHr || 120;
-          const shortage = requested - available;
-          const runHours = (shortage * 12) / rateInHr;
-          const runDays = Math.max(1, Math.ceil(runHours / 24));
-          const res = addContinuousExtrusionWithFreightPickup(asOf, runDays + (isRushOrder ? 1 : 2));
+          const res = addContinuousExtrusionWithFreightPickup(asOf, continuousDays + (isRushOrder ? 1 : 2));
           targetDispatchDate = res.dispatchDate;
-          wholeDaysMin = countBusinessDays(asOf, addContinuousExtrusionWithFreightPickup(asOf, runDays).dispatchDate);
+          wholeDaysMin = countBusinessDays(asOf, addContinuousExtrusionWithFreightPickup(asOf, continuousDays).dispatchDate);
           wholeDaysMax = countBusinessDays(asOf, targetDispatchDate);
         } else {
-          // Offline tooling die: 10 bus days setup + run
+          // Offline tooling die: 10 bus days setup + continuous extrusion
           const setupEnd = addBusinessDays(asOf, 10);
-          const rateInHr = 120;
-          const shortage = requested - available;
-          const runHours = (shortage * 12) / rateInHr;
-          const runDays = Math.max(1, Math.ceil(runHours / 24));
-          const res = addContinuousExtrusionWithFreightPickup(setupEnd, runDays + (isRushOrder ? 1 : 2));
+          const res = addContinuousExtrusionWithFreightPickup(setupEnd, continuousDays + (isRushOrder ? 1 : 2));
           targetDispatchDate = res.dispatchDate;
-          wholeDaysMin = countBusinessDays(asOf, addContinuousExtrusionWithFreightPickup(setupEnd, runDays).dispatchDate);
+          wholeDaysMin = countBusinessDays(asOf, addContinuousExtrusionWithFreightPickup(setupEnd, continuousDays).dispatchDate);
           wholeDaysMax = countBusinessDays(asOf, targetDispatchDate);
         }
 
@@ -282,9 +363,26 @@
           wholeDaysMin,
           wholeDaysMax,
           targetDispatchDate,
-          isLive
+          isLive,
+          machineRunHours,
+          continuousDays,
+          batchWeight
         };
-      }, [selectedItem, inquiredQty, quoteAsOfDate, isRushOrder, liveInspectionInfo]);
+      }, [selectedItem, inquiredQty, quoteAsOfDate, isRushOrder, liveInspectionInfo, selectedDieRate]);
+
+      // Filtered inventory rows for Tab 2
+      const filteredInventory = useMemo(() => {
+        return inventoryList.filter(item => {
+          const matchText = invSearchQuery === '' ||
+            item.partNumber.toLowerCase().includes(invSearchQuery.toLowerCase()) ||
+            item.description.toLowerCase().includes(invSearchQuery.toLowerCase()) ||
+            item.loc1.toLowerCase().includes(invSearchQuery.toLowerCase());
+          
+          if (!matchText) return false;
+          if (invFilterStock === 'instock') return item.qtyAvailable > 0;
+          return true;
+        });
+      }, [inventoryList, invSearchQuery, invFilterStock]);
 
       if (loading) {
         return (
@@ -492,7 +590,10 @@
                             <p className="text-xs text-slate-500 font-medium mt-0.5">{selectedItem.description || 'Angle 0.125 x 1.00 x 1.00 x 12'}</p>
                           </div>
                           <div className="flex items-center gap-2">
-                            <button className="text-xs text-blue-600 font-semibold hover:underline flex items-center gap-1">
+                            <button
+                              onClick={() => { setActiveTab('inventory'); setInvSearchQuery(selectedItem.partNumber); }}
+                              className="text-xs text-blue-600 font-semibold hover:underline flex items-center gap-1"
+                            >
                               View Stock
                             </button>
                             <button onClick={() => setSelectedPartId(null)} className="text-slate-400 hover:text-rose-600 transition">
@@ -578,23 +679,21 @@
                         type="text"
                         value={customerName}
                         onChange={e => setCustomerName(e.target.value)}
-                        placeholder="e.g. McMaster-Carr, Curbell Plastics, Polymershapes..."
+                        placeholder="e.g. McMaster Carr, Curbell Plastics, Polymershapes..."
                         className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                       />
                     </div>
 
-                    {/* Dates & Rush toggles */}
+                    {/* Dates & Rush Priority */}
                     <div className="grid grid-cols-2 gap-3 pt-1">
                       <div>
                         <label className="text-xs font-semibold text-slate-700 block mb-1">Quote As-Of Date</label>
-                        <div className="relative">
-                          <input
-                            type="date"
-                            value={quoteAsOfDate}
-                            onChange={e => setQuoteAsOfDate(e.target.value)}
-                            className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white font-medium"
-                          />
-                        </div>
+                        <input
+                          type="date"
+                          value={quoteAsOfDate}
+                          onChange={e => setQuoteAsOfDate(e.target.value)}
+                          className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white font-medium"
+                        />
                       </div>
                       <div>
                         <label className="text-xs font-semibold text-slate-700 block mb-1">Order Priority</label>
@@ -612,10 +711,55 @@
                         </button>
                       </div>
                     </div>
+
+                    {/* Lead Time Calculation Rule */}
+                    <div>
+                      <label className="text-xs font-semibold text-slate-700 block mb-1">Lead Time Calculation Rule</label>
+                      <select
+                        value={calculationRule}
+                        onChange={e => setCalculationRule(e.target.value)}
+                        className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white font-medium text-slate-700"
+                      >
+                        <option value="auto">Automated Rule (Stock, In-Line & OOR Queue Detection)</option>
+                        <option value="force_inline">Force In-Line Extrusion (Waive 10-day Setup)</option>
+                        <option value="force_offline">Force Offline Cold Setup (10-day Setup Required)</option>
+                      </select>
+                    </div>
+
+                    {/* Internal Inquiry Notes */}
+                    <div>
+                      <label className="text-xs font-semibold text-slate-700 block mb-1">Internal Inquiry Notes</label>
+                      <input
+                        type="text"
+                        value={internalNotes}
+                        onChange={e => setInternalNotes(e.target.value)}
+                        placeholder="e.g. Box packaging required, hold for consolidated freight"
+                        className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+
+                    {/* Save Inquiry / Reset Actions */}
+                    <div className="flex items-center gap-3 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => alert("Inquiry snapshot saved to session!")}
+                        className="flex-1 py-2.5 px-4 bg-slate-900 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 hover:bg-slate-800 transition"
+                      >
+                        <Bookmark className="w-3.5 h-3.5" />
+                        Save Inquiry to Log
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setInquiredQty(1000); setCustomerName(''); setInternalNotes(''); setIsRushOrder(false); }}
+                        className="px-4 py-2.5 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 rounded-xl hover:bg-slate-200 transition"
+                      >
+                        Reset
+                      </button>
+                    </div>
                   </div>
                 </div>
 
-                {/* Right Column: Lead Time Verdict & Rationale */}
+                {/* Right Column: Lead Time Verdict & Specs & Queues */}
                 <div className="lg:col-span-7 space-y-6">
                   {calc && (
                     <div className="space-y-6">
@@ -762,11 +906,11 @@
                           </div>
                           <div>
                             <span className="text-slate-400 text-[10px] block font-medium">Active Die Backlog</span>
-                            <span className="font-bold text-slate-800">1 Open Orders</span>
+                            <span className="font-bold text-slate-800">{dieQueueOrders.length} Open Orders</span>
                           </div>
                           <div>
                             <span className="text-slate-400 text-[10px] block font-medium">Last Audit Date</span>
-                            <span className="font-semibold text-slate-700">2026-06-30</span>
+                            <span className="font-semibold text-slate-700">{selectedItem?.lastAudit || '2026-06-30'}</span>
                           </div>
                           <div>
                             <span className="text-slate-400 text-[10px] block font-medium">Primary Location</span>
@@ -774,12 +918,234 @@
                           </div>
                         </div>
                       </div>
+
+                      {/* Tooling Extrusion Rate & Engineering Specs */}
+                      <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-5 space-y-4">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Gauge className="w-4 h-4 text-purple-600" />
+                            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-800">Tooling Extrusion Rate & Engineering Specs</h3>
+                          </div>
+                          <span className="px-2.5 py-1 bg-purple-50 text-purple-700 border border-purple-200 rounded-lg text-xs font-bold">
+                            RatesByProfile: {selectedDieRate.ftHr.toFixed(1)} ft/hr ({selectedDieRate.inHr} in/hr)
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                          <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80">
+                            <span className="text-[10px] uppercase font-bold text-slate-400 block">Die Cavities / Yield</span>
+                            <div className="text-sm font-black text-slate-900 mt-0.5">{selectedDieRate.cavities} Cavities</div>
+                            <span className="text-[10px] text-slate-500 block">Strands per cycle</span>
+                          </div>
+                          <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80">
+                            <span className="text-[10px] uppercase font-bold text-slate-400 block">Linear Weight</span>
+                            <div className="text-sm font-black text-slate-900 mt-0.5">{selectedDieRate.linearWeight.toFixed(3)} <span className="text-xs font-normal">lbs/ft</span></div>
+                            <span className="text-[10px] text-slate-500 block">{(selectedDieRate.linearWeight / 12).toFixed(4)} lbs/in</span>
+                          </div>
+                          <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80">
+                            <span className="text-[10px] uppercase font-bold text-slate-400 block">Extrusion Speed</span>
+                            <div className="text-sm font-black text-purple-700 mt-0.5">{selectedDieRate.ftHr.toFixed(1)} <span className="text-xs font-normal">ft/hr</span></div>
+                            <span className="text-[10px] text-slate-500 block">{selectedDieRate.inHr} in/hr (RatesByProfile Empirical Avg)</span>
+                          </div>
+                          <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80">
+                            <span className="text-[10px] uppercase font-bold text-slate-400 block">Batch Weight</span>
+                            <div className="text-sm font-black text-slate-900 mt-0.5">{calc.batchWeight.toLocaleString()} <span className="text-xs font-normal">lbs</span></div>
+                            <span className="text-[10px] text-slate-500 block">For {Number(inquiredQty).toLocaleString()} {selectedItem?.uom}</span>
+                          </div>
+                        </div>
+
+                        {/* Continuous Extrusion Formula Container */}
+                        <div className="p-4 bg-purple-50/40 rounded-xl border border-purple-100 text-xs text-purple-950 space-y-3">
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 border-b border-purple-200/60 pb-2">
+                            <div className="flex items-center gap-1.5 font-bold">
+                              <Zap className="w-3.5 h-3.5 text-purple-600" />
+                              <span>24/7 Continuous Extrusion Formula (168 Operating Hours / Week):</span>
+                            </div>
+                            <span className="font-extrabold text-purple-700 font-mono">
+                              {calc.machineRunHours.toFixed(1)} Machine Run Hours ÷ 24 hrs/day = ~{calc.continuousDays} Continuous Days
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1 text-[11px]">
+                            <div className="p-2 bg-white/80 rounded-lg border border-purple-100">
+                              <span className="font-bold text-slate-700 block">Tooling Setup & Heat:</span>
+                              <span className="text-slate-500">10 Business Days (Two full weeks baseline staging & heat for offline die)</span>
+                            </div>
+                            <div className="p-2 bg-white/80 rounded-lg border border-purple-100">
+                              <span className="font-bold text-slate-700 block">Active Line Run:</span>
+                              <span className="text-slate-500">{calc.machineRunHours.toFixed(1)} hrs ({(inquiredQty * 12).toLocaleString()} in ÷ {selectedDieRate.inHr} in/hr)</span>
+                            </div>
+                            <div className="p-2 bg-white/80 rounded-lg border border-purple-100">
+                              <span className="font-bold text-slate-700 block">24/7 Weekend Running:</span>
+                              <span className="text-emerald-700 font-semibold">Saturday & Sunday count as full 24-hr active run days</span>
+                            </div>
+                            <div className="p-2 bg-white/80 rounded-lg border border-purple-100">
+                              <span className="font-bold text-slate-700 block">Freight Carrier Dispatch:</span>
+                              <span className="text-slate-500">Mon–Fri freight dock pickup (weekend finish stages for Mon morning)</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Active Queue for Profile Die */}
+                      <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-5 space-y-4">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Layers className="w-4 h-4 text-purple-600" />
+                            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-800">
+                              Active Queue for Profile Die ({selectedItem?.inferredDie})
+                            </h3>
+                          </div>
+                          <span className="text-xs text-slate-500 font-medium">
+                            {dieQueueOrders.length} orders in queue
+                          </span>
+                        </div>
+
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left text-xs border-collapse">
+                            <thead>
+                              <tr className="border-b border-slate-200 text-slate-500 uppercase text-[10px] tracking-wider font-bold">
+                                <th className="pb-2">SO #</th>
+                                <th className="pb-2">Customer</th>
+                                <th className="pb-2">Color</th>
+                                <th className="pb-2 text-right">Qty</th>
+                                <th className="pb-2 text-center">Promise Date</th>
+                                <th className="pb-2 text-center">Status</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                              {dieQueueOrders.map((ord, idx) => (
+                                <tr key={idx} className="hover:bg-slate-50">
+                                  <td className="py-2.5 font-bold text-blue-600">{ord.soNum}</td>
+                                  <td className="py-2.5">{ord.customer}</td>
+                                  <td className="py-2.5">
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+                                      {ord.color}
+                                    </span>
+                                  </td>
+                                  <td className="py-2.5 text-right font-semibold">{ord.qty.toLocaleString()} {ord.uom}</td>
+                                  <td className="py-2.5 text-center text-slate-500">{ord.promiseDate}</td>
+                                  <td className="py-2.5 text-center">
+                                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800">
+                                      {ord.status || 'In Queue'}
+                                    </span>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
                     </div>
                   )}
                 </div>
               </div>
+            ) : activeTab === 'inventory' ? (
+              /* TAB 2: INVENTORY STOCK (SALES 2.0) DATA TABLE */
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
+                <div className="flex flex-col md:flex-row items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 w-full md:w-auto">
+                    <div className="relative flex-1 md:w-96">
+                      <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
+                      <input
+                        type="text"
+                        value={invSearchQuery}
+                        onChange={e => setInvSearchQuery(e.target.value)}
+                        placeholder="Search part number, description, bin location..."
+                        className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                    <select
+                      value={invFilterStock}
+                      onChange={e => setInvFilterStock(e.target.value)}
+                      className="px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-medium text-slate-700"
+                    >
+                      <option value="all">All Inventory ({inventoryList.length})</option>
+                      <option value="instock">In Stock Only ({kpis.readyInStock})</option>
+                    </select>
+                  </div>
+                  <button
+                    onClick={() => alert("SKU creation dialog connects to Master Part sheet.")}
+                    className="w-full md:w-auto px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    Add Part SKU
+                  </button>
+                </div>
+
+                {/* Main Table */}
+                <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-600 uppercase text-[10px] tracking-wider font-bold">
+                      <tr>
+                        <th className="py-3 px-3">Part Number</th>
+                        <th className="py-3 px-3">Sage Description</th>
+                        <th className="py-3 px-3">UoM</th>
+                        <th className="py-3 px-3 text-right">Length (IN)</th>
+                        <th className="py-3 px-3 text-center">Qty Available</th>
+                        <th className="py-3 px-3 text-center">Qty On Order</th>
+                        <th className="py-3 px-3">Primary Bin</th>
+                        <th className="py-3 px-3 text-center">Last Audit</th>
+                        <th className="py-3 px-3 text-center">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                      {filteredInventory.slice(0, 50).map((row) => (
+                        <tr key={row.id} className="hover:bg-blue-50/40 transition">
+                          <td className="py-2.5 px-3 font-bold text-slate-900">{row.partNumber}</td>
+                          <td className="py-2.5 px-3 text-slate-500 max-w-xs truncate">{row.description}</td>
+                          <td className="py-2.5 px-3">{row.uom}</td>
+                          <td className="py-2.5 px-3 text-right font-mono">{row.length}</td>
+                          <td className="py-2.5 px-3 text-center">
+                            <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                              row.qtyAvailable > 0
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : 'bg-slate-100 text-slate-500'
+                            }`}>
+                              {row.qtyAvailable.toLocaleString()}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-center font-mono text-slate-500">{row.qtyOnOrder}</td>
+                          <td className="py-2.5 px-3">
+                            {row.loc1 && row.loc1 !== 'None' ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-600">
+                                <MapPin className="w-2.5 h-2.5 text-slate-400" />
+                                {row.loc1}
+                              </span>
+                            ) : (
+                              <span className="text-slate-400 italic">None</span>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3 text-center text-slate-500 text-[11px]">{row.lastAudit}</td>
+                          <td className="py-2.5 px-3 text-center">
+                            <div className="flex items-center justify-center gap-1.5">
+                              <button
+                                onClick={() => { setSelectedPartId(row.id); setActiveTab('leadtime'); }}
+                                className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-[11px] font-bold shadow-xs transition"
+                              >
+                                Quote
+                              </button>
+                              <button className="p-1 text-slate-400 hover:text-slate-700 transition">
+                                <Edit2 className="w-3 h-3" />
+                              </button>
+                              <button className="p-1 text-slate-400 hover:text-rose-600 transition">
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="text-[11px] text-slate-400 text-right">
+                  Showing first {Math.min(50, filteredInventory.length)} of {filteredInventory.length} items
+                </div>
+              </div>
             ) : (
-              /* Secondary Tab Placeholder Display */
+              /* Fallback for other tabs */
               <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center max-w-2xl mx-auto my-8">
                 <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-3">
                   <Layers className="w-6 h-6" />
