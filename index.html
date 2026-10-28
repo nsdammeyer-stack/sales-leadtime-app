@@ -1054,10 +1054,29 @@
       // stays 1-2 business days. The 14 days is a fixed pipeline
       // allowance, not scaled by quantity.
       const FS_BILLET_YIELD = { '1': { 10: 200, 8: 160 }, '1.5': { 10: 300, 8: 240 }, '2': { 10: 400, 8: 320 } };
-      // Die lbs/day defaults from the 2026 Weekly projection's daily
-      // usage by billet thickness (Virgin Usage rows).
-      const FS_DIE_LBS_PER_DAY = { '1': 1836, '1.5': 1558, '2': 1833 };
       const FS_PROCESS_DAYS = 14;
+      // Extrusion rates come from RatesByProfile (Nathan, 2026-10-28),
+      // replacing the old Weekly-projection lbs/day defaults AND the
+      // 1.12 billet yield factor. RatesByProfile carries the
+      // full-sheet dies (ES-101/102/103/104/112/113 = 1", ES-150 =
+      // 1.5", ES-200 = 2") with measured average in/hr rates; the
+      // family rate is the mean of its dies' averages. Like the
+      // profile tab, extrusion days = total billet inches / in/hr /
+      // 24 hours of continuous running.
+      const fsRateByFamily = useMemo(() => {
+        const sums = {};
+        ratesList.forEach(r => {
+          const die = r.profileDie;
+          if (!die.startsWith('ES-')) return;
+          const fam = die === 'ES-150' ? '1.5' : die === 'ES-200' ? '2' : '1';
+          if (!sums[fam]) sums[fam] = { total: 0, count: 0 };
+          sums[fam].total += r.averageRateInHr;
+          sums[fam].count += 1;
+        });
+        const out = {};
+        Object.keys(sums).forEach(fam => { out[fam] = sums[fam].total / sums[fam].count; });
+        return out;
+      }, [ratesList]);
       // Billet sizes arrive as e.g. 1"x10' RBK, 1.5"x10' OFVGY, or the
       // odd 1'x10' VRD (single quote for inches). Normalize all of
       // them to "thickness x lengthFt COLOR" so sheet-side keys match.
@@ -1191,18 +1210,22 @@
         const weightEach = selectedFs.weightEach;
         const billetYield = selectedFs.billetThickness ? (FS_BILLET_YIELD[selectedFs.billetThickness] || {})[selectedFs.lengthFt] : null;
         const billetsNeeded = (weightEach != null && billetYield && sheetsToMake > 0)
-          ? Math.ceil((sheetsToMake * weightEach) / billetYield * 1.12)
+          ? Math.ceil((sheetsToMake * weightEach) / billetYield)
           : 0;
         const billetStockKnown = !!selectedFs.billetKey && Object.prototype.hasOwnProperty.call(billetByType, selectedFs.billetKey);
         const billetStock = billetStockKnown ? billetByType[selectedFs.billetKey] : null;
         const billetShortfall = (billetsNeeded > 0 && billetStock != null) ? Math.max(0, billetsNeeded - billetStock) : null;
-        const dieLbsPerDay = selectedFs.billetThickness ? FS_DIE_LBS_PER_DAY[selectedFs.billetThickness] : null;
-        const billetsPerDay = (dieLbsPerDay && billetYield) ? dieLbsPerDay / billetYield : null;
+        // RatesByProfile in/hr for this billet family; billets/day =
+        // in/hr x 24 hours of continuous running / billet length in
+        // inches (10-foot = 120", 8-foot = 96").
+        const fsInHr = selectedFs.billetThickness ? (fsRateByFamily[selectedFs.billetThickness] || null) : null;
+        const billetLengthIn = selectedFs.lengthFt * 12;
+        const billetsPerDay = (fsInHr && billetLengthIn) ? (fsInHr * 24) / billetLengthIn : null;
         const extrusionDays = (billetShortfall != null && billetsPerDay) ? Math.ceil(billetShortfall / billetsPerDay) : 0;
-        // When billet stock, the die family, or the sheet weight is
-        // unknown, extrusion time is unknown too: the estimate below
-        // is process-only and the panel says so.
-        const extrusionUnknown = needsProduction && (billetsNeeded === 0 && sheetsToMake > 0 && (weightEach == null || !billetYield) || billetStock == null);
+        // When billet stock, the die family, the sheet weight, or the
+        // family rate is unknown, extrusion time is unknown too: the
+        // estimate below is process-only and the panel says so.
+        const extrusionUnknown = needsProduction && (billetsNeeded === 0 && sheetsToMake > 0 && (weightEach == null || !billetYield) || billetStock == null || fsInHr == null);
         const processDays = needsProduction ? FS_PROCESS_DAYS : 0;
         // Line status: is this sheet's billet family + color running
         // on any full-sheet line right now? Turnover applies only
@@ -1235,11 +1258,11 @@
           remainingForOrder, shortfall, sheetsToMake,
           weightEach, billetYield, billetsNeeded,
           billetStock, billetStockKnown, billetShortfall,
-          dieLbsPerDay, billetsPerDay, extrusionDays, extrusionUnknown,
+          fsInHr, billetsPerDay, extrusionDays, extrusionUnknown,
           processDays, totalCalendarDays, readyDate, readyLabel,
           runningMatches, isFsRunning, turnoverDays,
         };
-      }, [selectedFs, fsQty, quoteAsOfDate, fsQueueOrders, billetByType, fsRunningLines]);
+      }, [selectedFs, fsQty, quoteAsOfDate, fsQueueOrders, billetByType, fsRunningLines, fsRateByFamily]);
       // Billet stock table rows, sorted by thickness, length, color.
       const billetStockRows = useMemo(() => Object.keys(billetByType).map(k => {
         const p = normalizeBilletType(k);
@@ -2765,14 +2788,14 @@
                             <div className="bg-slate-50 rounded-xl border border-slate-200 p-3"><span className="text-[10px] uppercase font-bold text-slate-500 block">Remaining For This Order</span><span className="text-sm font-extrabold text-slate-900">{fsCalc.remainingForOrder.toLocaleString()} EACH</span></div>
                             <div className="bg-slate-50 rounded-xl border border-slate-200 p-3"><span className="text-[10px] uppercase font-bold text-slate-500 block">Shortfall / Sheets To Make</span><span className="text-sm font-extrabold text-slate-900">{fsCalc.shortfall.toLocaleString()} / {fsCalc.sheetsToMake.toLocaleString()} EACH</span></div>
                             <div className="bg-slate-50 rounded-xl border border-slate-200 p-3"><span className="text-[10px] uppercase font-bold text-slate-500 block">Billet Type / Stock</span><span className="text-sm font-extrabold text-slate-900">{selectedFs.billetKey || `Unknown (die ${selectedFs.dieFamily})`} / {fsCalc.billetStock != null ? `${fsCalc.billetStock.toLocaleString()} billets` : 'not listed'}</span></div>
-                            <div className="bg-slate-50 rounded-xl border border-slate-200 p-3"><span className="text-[10px] uppercase font-bold text-slate-500 block">Billets Needed (× 1.12 factor)</span><span className="text-sm font-extrabold text-slate-900">{fsCalc.billetsNeeded > 0 ? `${fsCalc.billetsNeeded.toLocaleString()} billets` : (fsCalc.needsProduction ? '— cannot compute' : '0')}</span></div>
-                            <div className="bg-slate-50 rounded-xl border border-slate-200 p-3"><span className="text-[10px] uppercase font-bold text-slate-500 block">Extrusion Time</span><span className="text-sm font-extrabold text-slate-900">{fsCalc.extrusionUnknown ? 'Unknown — billet coverage missing' : (fsCalc.billetShortfall > 0 ? `${fsCalc.extrusionDays} days (${fsCalc.billetShortfall.toLocaleString()} billets ÷ ${fsCalc.billetsPerDay.toFixed(1)}/day at ${fsCalc.dieLbsPerDay.toLocaleString()} lbs/day)` : 'None — billet stock covers it')}</span></div>
+                            <div className="bg-slate-50 rounded-xl border border-slate-200 p-3"><span className="text-[10px] uppercase font-bold text-slate-500 block">Billets Needed</span><span className="text-sm font-extrabold text-slate-900">{fsCalc.billetsNeeded > 0 ? `${fsCalc.billetsNeeded.toLocaleString()} billets` : (fsCalc.needsProduction ? '— cannot compute' : '0')}</span></div>
+                            <div className="bg-slate-50 rounded-xl border border-slate-200 p-3"><span className="text-[10px] uppercase font-bold text-slate-500 block">Extrusion Time</span><span className="text-sm font-extrabold text-slate-900">{fsCalc.extrusionUnknown ? 'Unknown — billet coverage missing' : (fsCalc.billetShortfall > 0 ? `${fsCalc.extrusionDays} days (${fsCalc.billetShortfall.toLocaleString()} billets ÷ ${fsCalc.billetsPerDay.toFixed(1)}/day at ${fsCalc.fsInHr.toFixed(1)} in/hr)` : 'None — billet stock covers it')}</span></div>
                             <div className="bg-slate-50 rounded-xl border border-slate-200 p-3"><span className="text-[10px] uppercase font-bold text-slate-500 block">Line Status / Turnover</span><span className="text-sm font-extrabold text-slate-900">{!fsCalc.needsProduction ? 'In stock — no line time needed' : (fsCalc.isFsRunning ? `Running on ${fsCalc.runningMatches.map(m => m.lineLabel).join(', ')} — no turnover` : (fsCalc.turnoverDays > 0 ? `Not running in this color — ${fsCalc.turnoverDays}-day turnover added (current orders first, then die changeover + heat-up)` : 'Not running in this color — turnover not counted (billet coverage unknown)'))}</span></div>
                           </div>
                           {fsCalc.needsProduction && (
                             <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs font-medium text-amber-800 flex gap-2 items-start">
                               <Info className="w-4 h-4 shrink-0 mt-0.5" />
-                              <span>Process allowance: {fsCalc.processDays} days — skive, then 2 days in the curtain room, then square at the panel saw, then plane. {fsCalc.billetsNeeded > 0 && fsCalc.weightEach != null && fsCalc.billetYield ? `Billets = ${fsCalc.sheetsToMake.toLocaleString()} sheets × ${fsCalc.weightEach} lbs ÷ ${fsCalc.billetYield} lbs/billet × 1.12.` : ''} {fsCalc.turnoverDays > 0 ? `Plus ${fsCalc.turnoverDays} days die turnover: this billet family + color is not currently running on any full-sheet line (per the Inspection Sheet), so the current orders run first, then the die is changed over and heated to this color before extrusion.` : ''} Ready date runs on calendar days (7-day production) and rolls to Monday when freight pickup would land on a weekend.</span>
+                              <span>Process allowance: {fsCalc.processDays} days — skive, then 2 days in the curtain room, then square at the panel saw, then plane. {fsCalc.billetsNeeded > 0 && fsCalc.weightEach != null && fsCalc.billetYield ? `Billets = ${fsCalc.sheetsToMake.toLocaleString()} sheets × ${fsCalc.weightEach} lbs ÷ ${fsCalc.billetYield} lbs/billet.` : ''} {fsCalc.turnoverDays > 0 ? `Plus ${fsCalc.turnoverDays} days die turnover: this billet family + color is not currently running on any full-sheet line (per the Inspection Sheet), so the current orders run first, then the die is changed over and heated to this color before extrusion.` : ''} Ready date runs on calendar days (7-day production) and rolls to Monday when freight pickup would land on a weekend.</span>
                             </div>
                           )}
                           <p className="text-[11px] text-slate-400">Note: Sales 2.0 Qty On Order and the OOR line total can differ — the OOR total is the queue used here, the same way the profile calculator treats them.</p>
