@@ -283,7 +283,6 @@
       // Promise-date search for Open Orders: a date picker (exact day)
       // plus the text search also matching promise dates.
       const [oorDateFilter, setOorDateFilter] = useState('');
-      const [toolingSearchQuery, setToolingSearchQuery] = useState('');
       const [inspSearchQuery, setInspSearchQuery] = useState('');
       const [inspFilter, setInspFilter] = useState('all');
       const [dailySearchQuery, setDailySearchQuery] = useState('');
@@ -643,7 +642,7 @@
           return {
             // feedIndex is the row's position in the feed and is unique
             // even when the same die appears more than once. It must be
-            // used as the table row key (see the Tooling tab below).
+            // used as a unique row key.
             feedIndex: r.index_,
             profileDie,
             profileName: String(r.row[0] || '').trim(),
@@ -698,11 +697,10 @@
         const totalSKUs = inventoryList.length;
         const readyInStock = inventoryList.filter(i => i.qtyAvailable > 0).length;
         const backlogOrders = openOrdersList.length;
-        const toolingProfiles = ratesList.length;
         const activeLines = inspectionLinesList.filter(l => l.isActive).length;
         const totalLines = inspectionLinesList.length;
-        return { totalSKUs, readyInStock, backlogOrders, toolingProfiles, activeLines, totalLines };
-      }, [inventoryList, openOrdersList, ratesList, inspectionLinesList]);
+        return { totalSKUs, readyInStock, backlogOrders, activeLines, totalLines };
+      }, [inventoryList, openOrdersList, inspectionLinesList]);
 
       // Daily Shipments range. NOTE (2026-10-28): the Apps Script
       // action=leadtime feed currently returns only Sales 2.0, OOR,
@@ -748,18 +746,9 @@
         });
       }, [dailyRange]);
 
-      // Filtered lists for the Tooling, Inspection and Daily Shipments
-      // tabs. Daily shipments are shown newest promise date first (they
+      // Filtered lists for the Inspection and Daily Shipments tabs.
+      // Daily shipments are shown newest promise date first (they
       // are shipped history); the OOR tab keeps earliest promise first.
-      const filteredRates = useMemo(() => {
-        const q = toolingSearchQuery.trim().toLowerCase();
-        const list = q ? ratesList.filter(r =>
-          r.profileDie.toLowerCase().includes(q) ||
-          r.profileName.toLowerCase().includes(q)
-        ) : ratesList;
-        return [...list].sort((a, b) => a.profileDie.localeCompare(b.profileDie));
-      }, [ratesList, toolingSearchQuery]);
-
       const filteredInspectionLines = useMemo(() => {
         const q = inspSearchQuery.trim().toLowerCase();
         return inspectionLinesList.filter(l => {
@@ -1478,17 +1467,6 @@
               >
                 <Layers className="w-4 h-4" />
                 Open Orders (OOR)
-              </button>
-              <button
-                onClick={() => setActiveTab('tooling')}
-                className={`py-3 flex items-center gap-2 border-b-2 transition whitespace-nowrap ${
-                  activeTab === 'tooling'
-                    ? 'border-blue-600 text-blue-600 font-bold'
-                    : 'border-transparent hover:text-slate-700'
-                }`}
-              >
-                <Gauge className="w-4 h-4" />
-                Tooling Specs & Rates
               </button>
               <button
                 onClick={() => setActiveTab('inspection')}
@@ -2304,56 +2282,6 @@
                     Showing all {filteredOorOrders.length} records — scroll to see them all
                   </span>
                   <span>Use the Profile Die dropdown above to filter orders</span>
-                </div>
-              </div>
-            ) : activeTab === 'tooling' ? (
-              /* TAB 4: TOOLING SPECS & RATES (RatesByProfile) */
-              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
-                <div className="flex flex-col md:flex-row items-center justify-between gap-3">
-                  <div className="relative flex-1 max-w-md w-full">
-                    <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
-                    <input
-                      type="text"
-                      value={toolingSearchQuery}
-                      onChange={e => setToolingSearchQuery(e.target.value)}
-                      placeholder="Search profile die or profile name..."
-                      className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium"
-                    />
-                  </div>
-                  <div className="text-xs font-semibold text-slate-500">
-                    Showing {filteredRates.length} of {ratesList.length} profile dies — rates in inches/hour
-                  </div>
-                </div>
-                <div className="overflow-x-auto border border-slate-200 rounded-xl">
-                  <table className="w-full text-left text-xs border-collapse">
-                    <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-600 uppercase text-[10px] tracking-wider font-bold">
-                      <tr>
-                        <th className="py-3 px-3">Profile Die</th>
-                        <th className="py-3 px-3">Profile Name</th>
-                        <th className="py-3 px-3 text-right">Lowest Rate (in/hr)</th>
-                        <th className="py-3 px-3 text-right">Average Rate (in/hr)</th>
-                        <th className="py-3 px-3 text-right">Average Rate (ft/hr)</th>
-                        <th className="py-3 px-3 text-right">Recorded Rates</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
-                      {filteredRates.map((r) => (
-                        <tr key={r.feedIndex} className="hover:bg-blue-50/40 transition">
-                          <td className="py-2.5 px-3">
-                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200">{r.profileDie}</span>
-                          </td>
-                          <td className="py-2.5 px-3 font-medium text-slate-900">{r.profileName || '—'}</td>
-                          <td className="py-2.5 px-3 text-right">{r.lowestRateInHr != null ? r.lowestRateInHr.toLocaleString() : '—'}</td>
-                          <td className="py-2.5 px-3 text-right font-extrabold text-slate-900">{r.averageRateInHr.toLocaleString()}</td>
-                          <td className="py-2.5 px-3 text-right">{r.ftHr.toFixed(1)}</td>
-                          <td className="py-2.5 px-3 text-right text-slate-500">{r.recordedCount != null ? r.recordedCount : '—'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="text-[11px] text-slate-400">
-                  Lead times use the average rate in inches/hour. Dies with no average rate in RatesByProfile are not listed here and show “Rate not found” in the calculator.
                 </div>
               </div>
             ) : activeTab === 'inspection' ? (
