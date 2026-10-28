@@ -339,24 +339,26 @@
       }, [oorRange]);
 
       // Parse Rates By Profile.
-      // Actual columns: A Profile name, B Profile #, C Lowest Rate (ft/hr),
-      // D Recorded Rates (a count, NOT a speed), E Average Rate (ft/hr).
-      // inHr is derived (ft/hr x 12) so the existing run-time maths, which
-      // works in inches, stays correct.
+      // Actual columns: A Profile name, B Profile #, C Lowest Rate (in/hr),
+      // D Recorded Rates (a count, NOT a speed), E Average Rate (in/hr).
+      // CORRECTION (2026-10-28): these rates are inches per hour, NOT
+      // feet per hour. The old code treated the average as ft/hr and
+      // multiplied by 12 to get in/hr, which made every run time 12x too
+      // short. inHr is the average itself; ftHr is average / 12.
       const ratesList = useMemo(() => {
         if (!ratesRange?.data) return [];
         return ratesRange.data.filter(r => r.index_ > 0 && r.row && r.row[1]).map(r => {
           const profileDie = String(r.row[1] || '').trim().toUpperCase();
-          const lowestRateFtHr = parseFloat(r.row[2]) || null;
-          const averageRateFtHr = parseFloat(r.row[4]) || null;
-          if (!averageRateFtHr) return null;
+          const lowestRateInHr = parseFloat(r.row[2]) || null;
+          const averageRateInHr = parseFloat(r.row[4]) || null;
+          if (!averageRateInHr) return null;
           return {
             profileDie,
             profileName: String(r.row[0] || '').trim(),
-            lowestRateFtHr,
-            averageRateFtHr,
-            ftHr: averageRateFtHr,
-            inHr: averageRateFtHr * 12
+            lowestRateInHr,
+            averageRateInHr,
+            ftHr: averageRateInHr / 12,
+            inHr: averageRateInHr
           };
         }).filter(Boolean);
       }, [ratesRange]);
@@ -470,10 +472,10 @@
           profileDie: die,
           cavities: selectedItem.cavities || 2,
           linearWeight: selectedItem.weightFt || 0.103,
-          lowestRateFtHr: found ? found.lowestRateFtHr : null,
-          averageRateFtHr: found ? found.averageRateFtHr : null,
-          ftHr: found ? found.averageRateFtHr : null,
-          inHr: found ? found.averageRateFtHr * 12 : null,
+          lowestRateInHr: found ? found.lowestRateInHr : null,
+          averageRateInHr: found ? found.averageRateInHr : null,
+          ftHr: found ? found.averageRateInHr / 12 : null,
+          inHr: found ? found.averageRateInHr : null,
           rateMissing: !found
         };
       }, [selectedItem, ratesList]);
@@ -512,8 +514,8 @@
         const deficitQty = Math.max(0, requested - available);
         const inHr = selectedDieRate ? selectedDieRate.inHr : null;
         // Deficit only: stock already covers the rest, so only the deficit
-        // needs extruding. inHr = average ft/hr x 12, so
-        // (deficit ft x 12 in/ft) / inHr = deficit / average ft/hr.
+        // needs extruding. inHr is the RatesByProfile average in inches
+        // per hour, so machineRunHours = deficit ft x 12 in/ft / inHr.
         const machineRunHours = inHr ? (deficitQty * 12) / inHr : 0;
         const continuousDays = deficitQty > 0 ? Math.max(1, Math.ceil(machineRunHours / 24)) : 0;
         const batchWeight = Math.round(requested * selectedDieRate.linearWeight);
@@ -1267,7 +1269,7 @@
                             </div>
                             <div className="p-2 bg-white/80 rounded-lg border border-purple-100">
                               <span className="font-bold text-slate-700 block">Active Line Run:</span>
-                              <span className="text-slate-500">{calc.machineRunHours.toFixed(1)} hrs ({calc.deficitQty.toLocaleString()} ft deficit ÷ {selectedDieRate && selectedDieRate.ftHr ? `${selectedDieRate.ftHr} ft/hr` : 'no rate'})</span>
+                              <span className="text-slate-500">{calc.machineRunHours.toFixed(1)} hrs ({calc.deficitQty.toLocaleString()} ft deficit × 12 in/ft ÷ {selectedDieRate && selectedDieRate.inHr ? `${selectedDieRate.inHr} in/hr` : 'no rate'})</span>
                             </div>
                             <div className="p-2 bg-white/80 rounded-lg border border-purple-100">
                               <span className="font-bold text-slate-700 block">24/7 Weekend Running:</span>
