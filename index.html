@@ -179,13 +179,34 @@
       const ratesRange = data?.find(d => d.name === 'RatesByProfile') || data?.[3];
       const inspRange = data?.find(d => d.name === 'Inspection Sheet') || data?.[4];
 
+      // Master Part 2.0 lookup, keyed by New Part Number (column I).
+      // Sales 2.0 has no description column: its column G is "Date of Last
+      // Audit", so descriptions, weight and cavities must come from here.
+      const masterPartByPart = useMemo(() => {
+        const map = {};
+        if (!masterPartRange?.data) return map;
+        masterPartRange.data.forEach(r => {
+          if (!r.row || !r.row[8]) return;
+          const key = String(r.row[8]).trim().toUpperCase();
+          if (key && !map[key]) {
+            map[key] = {
+              description: String(r.row[10] || '').trim(),
+              weightFt: parseFloat(r.row[5]) || null,
+              cavities: parseInt(r.row[17], 10) || null,
+            };
+          }
+        });
+        return map;
+      }, [masterPartRange]);
+
       // Parse Inventory List (Sales 2.0)
       const inventoryList = useMemo(() => {
         if (!salesRange?.data) return [];
         return salesRange.data.filter(r => r.index_ > 0 && r.row && (r.row[1] || r.row[0])).map(r => {
           const partNumber = String(r.row[1] || '').trim();
           const sage = String(r.row[0] || '').trim();
-          const desc = String(r.row[6] || r.row[1] || '').trim();
+          const master = masterPartByPart[partNumber.toUpperCase()] || {};
+          const desc = master.description || partNumber;
           const lastAudit = r.row[8] ? String(r.row[8]).trim() : '—';
           return {
             id: `${r.index_}-${partNumber}`,
@@ -198,10 +219,12 @@
             qtyOnOrder: parseFloat(r.row[4]) || 0,
             loc1: r.row[7] ? String(r.row[7]).trim() : 'None',
             lastAudit: lastAudit !== '' ? lastAudit : '—',
+            weightFt: master.weightFt,
+            cavities: master.cavities,
             inferredDie: extractBaseDie(partNumber || sage)
           };
         });
-      }, [salesRange]);
+      }, [salesRange, masterPartByPart]);
 
       // Parse Open Orders (OOR)
       const openOrdersList = useMemo(() => {
@@ -242,23 +265,27 @@
           });
       }, [oorRange]);
 
-      // Parse Rates By Profile
+      // Parse Rates By Profile.
+      // Actual columns: A Profile name, B Profile #, C Lowest Rate (ft/hr),
+      // D Recorded Rates (a count, NOT a speed), E Average Rate (ft/hr).
+      // inHr is derived (ft/hr x 12) so the existing run-time maths, which
+      // works in inches, stays correct.
       const ratesList = useMemo(() => {
         if (!ratesRange?.data) return [];
-        return ratesRange.data.filter(r => r.index_ > 0 && r.row && r.row[0]).map(r => {
-          const profileDie = String(r.row[0] || '').trim().toUpperCase();
-          const cavities = parseInt(r.row[1], 10) || 2;
-          const linearWeight = parseFloat(r.row[2]) || 0.103;
-          const inHr = parseFloat(r.row[3]) || 219;
-          const ftHr = inHr / 12;
+        return ratesRange.data.filter(r => r.index_ > 0 && r.row && r.row[1]).map(r => {
+          const profileDie = String(r.row[1] || '').trim().toUpperCase();
+          const lowestRateFtHr = parseFloat(r.row[2]) || null;
+          const averageRateFtHr = parseFloat(r.row[4]) || null;
+          if (!averageRateFtHr) return null;
           return {
             profileDie,
-            cavities,
-            linearWeight,
-            inHr,
-            ftHr
+            profileName: String(r.row[0] || '').trim(),
+            lowestRateFtHr,
+            averageRateFtHr,
+            ftHr: averageRateFtHr,
+            inHr: averageRateFtHr * 12
           };
-        });
+        }).filter(Boolean);
       }, [ratesRange]);
 
       // Parse Inspection Sheet
@@ -287,12 +314,12 @@
 
       // Top KPI Badges
       const kpis = useMemo(() => {
-        const totalSKUs = inventoryList.length || 6545;
-        const readyInStock = inventoryList.filter(i => i.qtyAvailable > 0).length || 1262;
-        const backlogOrders = openOrdersList.length || 723;
-        const toolingProfiles = ratesList.length || 495;
-        const activeLines = inspectionLinesList.filter(l => l.isActive).length || 43;
-        const totalLines = 65;
+        const totalSKUs = inventoryList.length;
+        const readyInStock = inventoryList.filter(i => i.qtyAvailable > 0).length;
+        const backlogOrders = openOrdersList.length;
+        const toolingProfiles = ratesList.length;
+        const activeLines = inspectionLinesList.filter(l => l.isActive).length;
+        const totalLines = inspectionLinesList.length;
         return { totalSKUs, readyInStock, backlogOrders, toolingProfiles, activeLines, totalLines };
       }, [inventoryList, openOrdersList, ratesList, inspectionLinesList]);
 
@@ -345,32 +372,31 @@
         return inventoryList.find(i => i.id === selectedPartId) || inventoryList[0] || null;
       }, [inventoryList, selectedPartId]);
 
-      // Rate spec for current die
+      // Rate spec for current die. Weight and cavities come from Master
+      // Part 2.0 for the selected part, not from RatesByProfile, which does
+      // not carry them. A missing rate is flagged, not silently replaced
+      // with 219, so a lead time is never quoted off a made-up speed.
       const selectedDieRate = useMemo(() => {
-        if (!selectedItem) return { cavities: 2, linearWeight: 0.103, inHr: 219, ftHr: 18.25 };
+        if (!selectedItem) return null;
         const die = selectedItem.inferredDie.toUpperCase();
-        const found = ratesList.find(r => r.profileDie === die || die.startsWith(r.profileDie));
-        if (found) return found;
-        return { cavities: 2, linearWeight: 0.103, inHr: 219, ftHr: 18.25 };
+        const found = ratesList.find(r => r.profileDie === die) || null;
+        return {
+          profileDie: die,
+          cavities: selectedItem.cavities || 2,
+          linearWeight: selectedItem.weightFt || 0.103,
+          lowestRateFtHr: found ? found.lowestRateFtHr : null,
+          averageRateFtHr: found ? found.averageRateFtHr : null,
+          ftHr: found ? found.averageRateFtHr : null,
+          inHr: found ? found.averageRateFtHr * 12 : null,
+          rateMissing: !found
+        };
       }, [selectedItem, ratesList]);
 
       // Active Orders in Queue for this Die
       const dieQueueOrders = useMemo(() => {
         if (!selectedItem) return [];
         const die = selectedItem.inferredDie.toUpperCase();
-        const matches = openOrdersList.filter(o => o.profileDie === die || o.itemPart.toUpperCase().includes(die));
-        if (matches.length > 0) return matches;
-        return [
-          {
-            soNum: '245673',
-            customer: 'Pobco, Inc.',
-            color: 'NATURAL',
-            qty: 2000,
-            uom: 'FEET',
-            promiseDate: 'Sep 23, 2026',
-            status: 'In Queue'
-          }
-        ];
+        return openOrdersList.filter(o => o.profileDie === die || o.itemPart.toUpperCase().includes(die));
       }, [selectedItem, openOrdersList]);
 
       // Matching Active Line on plant floor
@@ -397,16 +423,24 @@
         const coveragePct = Math.min(100, Math.round((available / requested) * 100));
         const balanceRemaining = Math.max(0, available - requested);
 
-        const inHr = selectedDieRate.inHr || 219;
-        const effectiveInches = requested * 12;
-        const machineRunHours = effectiveInches / inHr;
-        const continuousDays = Math.max(1, Math.ceil(machineRunHours / 24));
+        const deficitQty = Math.max(0, requested - available);
+        const inHr = selectedDieRate ? selectedDieRate.inHr : null;
+        // Deficit only: stock already covers the rest, so only the deficit
+        // needs extruding. inHr = average ft/hr x 12, so
+        // (deficit ft x 12 in/ft) / inHr = deficit / average ft/hr.
+        const machineRunHours = inHr ? (deficitQty * 12) / inHr : 0;
+        const continuousDays = deficitQty > 0 ? Math.max(1, Math.ceil(machineRunHours / 24)) : 0;
         const batchWeight = Math.round(requested * selectedDieRate.linearWeight);
 
+        const rateMissing = !is100InStock && (!selectedDieRate || selectedDieRate.rateMissing);
         let wholeDaysMin = 1, wholeDaysMax = 2;
         let targetDispatchDate;
 
-        if (is100InStock) {
+        if (rateMissing) {
+          wholeDaysMin = null;
+          wholeDaysMax = null;
+          targetDispatchDate = null;
+        } else if (is100InStock) {
           wholeDaysMin = 1;
           wholeDaysMax = isRushOrder ? 1 : 2;
           targetDispatchDate = addBusinessDays(asOf, wholeDaysMax);
@@ -427,6 +461,8 @@
           is100InStock,
           coveragePct,
           balanceRemaining,
+          deficitQty,
+          rateMissing,
           wholeDaysMin,
           wholeDaysMax,
           targetDispatchDate,
@@ -854,9 +890,11 @@
                               Estimated Whole (Single Complete) Lead Time:
                             </span>
                             <div className="text-3xl font-extrabold tracking-tight mt-0.5">
-                              {calc.wholeDaysMin === calc.wholeDaysMax
-                                ? `${calc.wholeDaysMin} Business Day`
-                                : `${calc.wholeDaysMin} - ${calc.wholeDaysMax} Business Days`}
+                              {calc.rateMissing
+                                ? 'Rate not found — lead time cannot be calculated'
+                                : calc.wholeDaysMin === calc.wholeDaysMax
+                                  ? `${calc.wholeDaysMin} Business Day`
+                                  : `${calc.wholeDaysMin} - ${calc.wholeDaysMax} Business Days`}
                             </div>
                           </div>
                           <div className="text-left sm:text-right">
@@ -994,7 +1032,7 @@
                             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-800">Tooling Extrusion Rate & Engineering Specs</h3>
                           </div>
                           <span className="px-2.5 py-1 bg-purple-50 text-purple-700 border border-purple-200 rounded-lg text-xs font-bold">
-                            RatesByProfile: {selectedDieRate.ftHr.toFixed(1)} ft/hr ({selectedDieRate.inHr} in/hr)
+                            RatesByProfile: {selectedDieRate && selectedDieRate.ftHr ? `${selectedDieRate.ftHr.toFixed(1)} ft/hr (${selectedDieRate.inHr} in/hr)` : 'No rate found for this die'}
                           </span>
                         </div>
 
@@ -1011,8 +1049,8 @@
                           </div>
                           <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80">
                             <span className="text-[10px] uppercase font-bold text-slate-400 block">Extrusion Speed</span>
-                            <div className="text-sm font-black text-purple-700 mt-0.5">{selectedDieRate.ftHr.toFixed(1)} <span className="text-xs font-normal">ft/hr</span></div>
-                            <span className="text-[10px] text-slate-500 block">{selectedDieRate.inHr} in/hr (RatesByProfile Empirical Avg)</span>
+                            <div className="text-sm font-black text-purple-700 mt-0.5">{selectedDieRate && selectedDieRate.ftHr ? selectedDieRate.ftHr.toFixed(1) : '—'} <span className="text-xs font-normal">ft/hr</span></div>
+                            <span className="text-[10px] text-slate-500 block">{selectedDieRate && selectedDieRate.inHr ? `${selectedDieRate.inHr} in/hr (RatesByProfile Empirical Avg)` : 'No Average Rate in RatesByProfile for this die'}</span>
                           </div>
                           <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80">
                             <span className="text-[10px] uppercase font-bold text-slate-400 block">Batch Weight</span>
@@ -1040,7 +1078,7 @@
                             </div>
                             <div className="p-2 bg-white/80 rounded-lg border border-purple-100">
                               <span className="font-bold text-slate-700 block">Active Line Run:</span>
-                              <span className="text-slate-500">{calc.machineRunHours.toFixed(1)} hrs ({(inquiredQty * 12).toLocaleString()} in ÷ {selectedDieRate.inHr} in/hr)</span>
+                              <span className="text-slate-500">{calc.machineRunHours.toFixed(1)} hrs ({calc.deficitQty.toLocaleString()} ft deficit ÷ {selectedDieRate && selectedDieRate.ftHr ? `${selectedDieRate.ftHr} ft/hr` : 'no rate'})</span>
                             </div>
                             <div className="p-2 bg-white/80 rounded-lg border border-purple-100">
                               <span className="font-bold text-slate-700 block">24/7 Weekend Running:</span>
