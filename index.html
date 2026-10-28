@@ -44,6 +44,154 @@
     const GATE_PASSWORD = "3311";
     const GATE_SESSION_KEY = "sales-leadtime-unlocked";
 
+    // =========================================================================
+    // PACKAGING ESTIMATOR — port of the "Packaging Tool" Google Sheet's
+    // custom functions (ESTIMATE_PACKING, ESTIMATE_SUGGESTED_BOX,
+    // ESTIMATE_DIMS, getMatDimsFromLine, getBestBox). The box list below
+    // is that sheet's Settings tab. Verified 2026-10-28: this port
+    // reproduces all 6 example rows in the sheet exactly (packing text,
+    // suggested box, and dimensions). It runs entirely in the app — no
+    // sheet or script call is needed for a calculation.
+    // =========================================================================
+    const PACKAGING_BOXES = [
+      ["8x8x8", 8, 8, 8, 512], ["60x4x4", 60, 4, 4, 960], ["10x10x10", 10, 10, 10, 1000],
+      ["12x10x12", 12, 10, 12, 1440], ["60x5x5", 60, 5, 5, 1500], ["12x12x12", 12, 12, 12, 1728],
+      ["60x6x6", 60, 6, 6, 2160], ["15x15x10", 15, 15, 10, 2250], ["20x20x6", 20, 20, 6, 2400],
+      ["15x15x15", 15, 15, 15, 3375], ["60x8x8", 60, 8, 8, 3840], ["28x28x6", 28, 28, 6, 4704],
+      ["60x10x10", 60, 10, 10, 6000], ["24x24x12", 24, 24, 12, 6912], ["20x20x20", 20, 20, 20, 8000],
+      ["24x24x24", 24, 24, 24, 13824]
+    ];
+
+    function estimatePacking(materialType, length, width, height, thickness, diameter, leg1, leg2, qty, totalWeight) {
+      if (!qty || qty <= 0) return "";
+      var isCrate = (totalWeight > 400), isBox = (!isCrate && length <= 60);
+      var maxWeight = isCrate ? (2100 - 140) : (isBox ? 60 : 150);
+      var weightPerPiece = totalWeight / qty;
+      var minContainers = Math.ceil(totalWeight / maxWeight);
+      var mType = (materialType || "").toString().toLowerCase();
+      if (isCrate) {
+        var cW = 25.0, cH = 23.5, maxP = Infinity;
+        if (mType.indexOf("rod") !== -1 || mType.indexOf("tube") !== -1 || mType.indexOf("round") !== -1) {
+          var d = parseFloat(diameter) || 1;
+          maxP = Math.floor(cW / d) * Math.floor(cH / d);
+        } else if (mType.indexOf("angle") !== -1) {
+          var l1 = parseFloat(leg1) || 1, t = parseFloat(thickness) || 0;
+          var ppc = t > 0 ? Math.floor((cH - l1 - 1.75) / t) + 1 : 1000;
+          maxP = Math.floor(cW / l1) * ppc;
+        } else if (mType.indexOf("channel") !== -1) {
+          var w = parseFloat(width) || 1, h = parseFloat(height) || parseFloat(leg1) || 1, t = parseFloat(thickness) || 0;
+          var ppc = t > 0 ? Math.floor((cH - h) / t) + 1 : 1000;
+          maxP = Math.floor(cW / w) * ppc;
+        } else if (mType.indexOf("flat") !== -1 || mType.indexOf("bar") !== -1) {
+          var w = parseFloat(width) || 1, t = parseFloat(thickness) || parseFloat(height) || 1;
+          maxP = Math.floor(cW / w) * Math.floor(cH / t);
+        }
+        if (maxP < 1 || isNaN(maxP)) maxP = 1;
+        minContainers = Math.max(minContainers, Math.ceil(qty / maxP));
+      }
+      if (weightPerPiece > maxWeight) minContainers = qty;
+      var baseQty = Math.floor(qty / minContainers), remainder = qty % minContainers, containers = [];
+      for (var i = 0; i < minContainers; i++) { containers.push(baseQty + (i < remainder ? 1 : 0)); }
+      var containerName = isCrate ? "Crate" : (isBox ? "Box" : "Bag");
+      var result = containers.length + " " + (containers.length > 1 ? containerName + (isBox ? "es" : "s") : containerName) + " total.\n";
+      var maxWidth = isCrate ? 25.0 : 10.0;
+      for (var i = 0; i < containers.length; i++) {
+        var cQty = containers[i];
+        var rawWeight = cQty * weightPerPiece;
+        if (isCrate) rawWeight += 140;
+        var cWeight = rawWeight.toFixed(1), counts = [];
+        if (mType.indexOf("rod") !== -1 || mType.indexOf("tube") !== -1 || mType.indexOf("round") !== -1) {
+          var d = parseFloat(diameter) || 1, maxPerRow = isBox ? Math.ceil(Math.sqrt(cQty)) : Math.max(1, Math.floor(maxWidth / d)), remaining = cQty;
+          if (!isBox && !isCrate && cQty <= maxPerRow * 2) { counts.push(Math.ceil(cQty / 2)); counts.push(Math.floor(cQty / 2)); }
+          else { while (remaining > 0) { var take = Math.min(remaining, maxPerRow); counts.push(take); remaining -= take; } }
+          counts = counts.filter(function (n) { return n > 0; });
+          result += containerName + " " + (i + 1) + ": " + cQty + " pcs (" + cWeight + " lbs) - " + counts.length + " rows: " + counts.join(" + ");
+        } else if (mType.indexOf("angle") !== -1 || mType.indexOf("flat") !== -1 || mType.indexOf("bar") !== -1 || mType.indexOf("channel") !== -1) {
+          var isAngle = mType.indexOf("angle") !== -1, isChannel = mType.indexOf("channel") !== -1;
+          var pW = isAngle ? (parseFloat(leg1) || 1) : (parseFloat(width) || 1), t = parseFloat(thickness) || 0, pH = isAngle ? (parseFloat(leg1) || 1) : (isChannel ? (parseFloat(height) || parseFloat(leg1) || 1) : (parseFloat(thickness) || parseFloat(height) || 1));
+          var numStacks;
+          if (isBox) {
+            var bestScore = Infinity, bestStacks = 1;
+            for (var s2 = 1; s2 <= cQty; s2++) {
+              var pps = Math.ceil(cQty / s2), w = s2 * pW, h = isAngle ? (pH + (pps - 1) * t + 1.75) : (isChannel ? (pH + (pps - 1) * t) : (pps * pH)), score = Math.max(w, h);
+              if (score < bestScore) { bestScore = score; bestStacks = s2; }
+            }
+            numStacks = bestStacks;
+          } else { numStacks = Math.max(1, Math.min(Math.max(1, Math.floor(maxWidth / pW)), Math.ceil(cQty / 15))); }
+          var baseS = Math.floor(cQty / numStacks), sRem = cQty % numStacks;
+          for (var s3 = 0; s3 < numStacks; s3++) { counts.push(baseS + (s3 < sRem ? 1 : 0)); }
+          result += containerName + " " + (i + 1) + ": " + cQty + " pcs (" + cWeight + " lbs) - " + counts.length + " stacks: " + counts.join(" + ");
+        } else { result += containerName + " " + (i + 1) + ": " + cQty + " pcs (" + cWeight + " lbs)"; }
+        if (i < containers.length - 1) result += "\n";
+      }
+      return result;
+    }
+
+    function getMatDimsFromLine(line, materialType, width, height, thickness, diameter, leg1) {
+      var mType = (materialType || "").toString().toLowerCase(), D = parseFloat(diameter) || 0, W = parseFloat(width) || 0, H = parseFloat(height) || 0, T = parseFloat(thickness) || 0, L1 = parseFloat(leg1) || 0, matW = 0, matH = 0;
+      if (mType.indexOf('rod') !== -1 || mType.indexOf('tube') !== -1 || mType.indexOf('round') !== -1) {
+        var rowM = line.match(/rows:\s*([\d\s\+]+)/i);
+        if (rowM) { var rC = rowM[1].split('+').map(function (s) { return parseInt(s.trim()); }); matW = rC[0] * D; matH = rC.length * D; }
+      } else if (mType.indexOf('angle') !== -1 || mType.indexOf('flat') !== -1 || mType.indexOf('bar') !== -1 || mType.indexOf('channel') !== -1) {
+        var stM = line.match(/stacks:\s*([\d\s\+]+)/i);
+        if (stM) {
+          var sC = stM[1].split('+').map(function (s) { return parseInt(s.trim()); }), maxS = Math.max.apply(null, sC);
+          if (mType.indexOf('angle') !== -1) { matW = sC.length * L1; matH = L1 + (maxS - 1) * T + 1.75; }
+          else if (mType.indexOf('channel') !== -1) { matW = sC.length * W; matH = (H || L1) + (maxS - 1) * T; }
+          else { matW = sC.length * W; matH = maxS * (T || H); }
+        }
+      }
+      return { w: matW, h: matH };
+    }
+
+    function getBestBox(reqL, reqW, reqH, settingsData) {
+      var reqD = [reqL, reqW, reqH].sort(function (a, b) { return b - a; }), bestB = null, bestV = Infinity;
+      if (!settingsData || !Array.isArray(settingsData)) return null;
+      for (var i = 0; i < settingsData.length; i++) {
+        var row = settingsData[i]; if (!row || !row[0] || row[0] === "Box Name" || row[0] === "") continue;
+        var bD = [parseFloat(row[1]), parseFloat(row[2]), parseFloat(row[3])].sort(function (a, b) { return b - a; });
+        if (reqD[0] <= bD[0] && reqD[1] <= bD[1] && reqD[2] <= bD[2]) {
+          if (parseFloat(row[4]) < bestV) { bestV = parseFloat(row[4]); bestB = row[0]; }
+        }
+      }
+      return bestB;
+    }
+
+    function estimateSuggestedBox(materialType, length, width, height, thickness, diameter, leg1, leg2, qty, totalWeight, estimatedPacking, settingsRange) {
+      if (!estimatedPacking || typeof estimatedPacking !== 'string') return '';
+      var lines = estimatedPacking.split('\n'), results = [], isAny = false;
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim(); if (!line || line.indexOf("total") !== -1) continue;
+        var labelMatch = line.match(/(Box\s*\d+|Bag\s*\d+|Crate\s*\d+)/i), label = labelMatch ? labelMatch[1] : ("Container " + i);
+        var isBox = label.toLowerCase().indexOf('box') !== -1, isCrate = label.toLowerCase().indexOf('crate') !== -1;
+        if (isCrate) { results.push(label + ": Crate"); isAny = true; continue; }
+        if (!isBox) continue;
+        isAny = true;
+        var dims = getMatDimsFromLine(line, materialType, width, height, thickness, diameter, leg1);
+        var best = getBestBox(length, dims.w, dims.h, settingsRange);
+        results.push(label + ": " + (best || "No box fits"));
+      }
+      return isAny ? results.join('\n') : "N/A";
+    }
+
+    function estimateDims(materialType, length, width, height, thickness, diameter, leg1, leg2, qty, totalWeight, estimatedPacking, settingsRange) {
+      if (!estimatedPacking || typeof estimatedPacking !== 'string') return '';
+      var lines = estimatedPacking.split('\n'), results = [];
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim(); if (!line || line.indexOf("total") !== -1) continue;
+        var labelMatch = line.match(/(Box\s*\d+|Bag\s*\d+|Crate\s*\d+)/i), label = labelMatch ? labelMatch[1] : ("Container " + i);
+        if (label.toLowerCase().indexOf('crate') !== -1) { results.push(label + ": 125.00\" x 29.00\" x 33.00\""); continue; }
+        var dims = getMatDimsFromLine(line, materialType, width, height, thickness, diameter, leg1);
+        if (label.toLowerCase().indexOf('box') !== -1) {
+          var best = getBestBox(length, dims.w, dims.h, settingsRange);
+          results.push(label + ": " + (best || (parseFloat(length).toFixed(2) + '" x ' + dims.w.toFixed(2) + '" x ' + dims.h.toFixed(2) + '"')));
+        } else {
+          results.push(label + ": " + (parseFloat(length) + 5).toFixed(2) + '" x ' + (dims.w + 1).toFixed(2) + '" x ' + (dims.h + 3).toFixed(2) + '"');
+        }
+      }
+      return results.join('\n');
+    }
+
     function App() {
       const [data, setData] = useState(null);
       const [loading, setLoading] = useState(true);
@@ -96,6 +244,18 @@
       const [inspFilter, setInspFilter] = useState('all');
       const [dailySearchQuery, setDailySearchQuery] = useState('');
       const [dailyDateFilter, setDailyDateFilter] = useState('');
+      // Packaging estimator inputs (same columns as the Packaging Tool
+      // sheet: material type, dimensions, qty, total weight).
+      const [pkgMaterial, setPkgMaterial] = useState('Flat Bar');
+      const [pkgLength, setPkgLength] = useState('');
+      const [pkgWidth, setPkgWidth] = useState('');
+      const [pkgHeight, setPkgHeight] = useState('');
+      const [pkgThickness, setPkgThickness] = useState('');
+      const [pkgDiameter, setPkgDiameter] = useState('');
+      const [pkgLeg1, setPkgLeg1] = useState('');
+      const [pkgLeg2, setPkgLeg2] = useState('');
+      const [pkgQty, setPkgQty] = useState('');
+      const [pkgWeight, setPkgWeight] = useState('');
       // Order card modal: set to an order from openOrdersList when its
       // SO number is clicked, anywhere order numbers appear.
       const [selectedOrder, setSelectedOrder] = useState(null);
@@ -588,6 +748,22 @@
         });
       }, [dailyShipmentsList, dailySearchQuery, dailyDateFilter]);
 
+      // Packaging estimator result: recomputed live as the form changes,
+      // the way the sheet's formulas recalculate. Package type follows
+      // the sheet's language: over 400 lbs is a Crate, otherwise length
+      // 60" or under is a Box, otherwise a Poly Bag.
+      const pkgResult = useMemo(() => {
+        const num = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
+        const length = num(pkgLength), qty = num(pkgQty), weight = num(pkgWeight);
+        if (!qty || qty <= 0 || !weight || weight <= 0 || !length || length <= 0) return null;
+        const packing = estimatePacking(pkgMaterial, length, num(pkgWidth), num(pkgHeight), num(pkgThickness), num(pkgDiameter), num(pkgLeg1), num(pkgLeg2), qty, weight);
+        if (!packing) return null;
+        const suggested = estimateSuggestedBox(pkgMaterial, length, num(pkgWidth), num(pkgHeight), num(pkgThickness), num(pkgDiameter), num(pkgLeg1), num(pkgLeg2), qty, weight, packing, PACKAGING_BOXES);
+        const dims = estimateDims(pkgMaterial, length, num(pkgWidth), num(pkgHeight), num(pkgThickness), num(pkgDiameter), num(pkgLeg1), num(pkgLeg2), qty, weight, packing, PACKAGING_BOXES);
+        const containerType = weight > 400 ? 'Crate' : (length <= 60 ? 'Box' : 'Poly Bag');
+        return { packing, suggested, dims, containerType };
+      }, [pkgMaterial, pkgLength, pkgWidth, pkgHeight, pkgThickness, pkgDiameter, pkgLeg1, pkgLeg2, pkgQty, pkgWeight]);
+
       // Summary list of dies with backlog for OOR tab carousel
       const oorDieSummaries = useMemo(() => {
         const counts = {};
@@ -985,6 +1161,17 @@
               >
                 <Activity className="w-4 h-4" />
                 Inspection Sheet (In-Line Dies)
+              </button>
+              <button
+                onClick={() => setActiveTab('packaging')}
+                className={`py-3 flex items-center gap-2 border-b-2 transition whitespace-nowrap ${
+                  activeTab === 'packaging'
+                    ? 'border-blue-600 text-blue-600 font-bold'
+                    : 'border-transparent hover:text-slate-700'
+                }`}
+              >
+                <Package className="w-4 h-4" />
+                Packaging
               </button>
               <button
                 onClick={() => setActiveTab('daily')}
@@ -1979,6 +2166,112 @@
                   </button>
                 </div>
               )
+            ) : activeTab === 'packaging' ? (
+              /* TAB 7: PACKAGING ESTIMATOR (Packaging Tool sheet) */
+              <div className="space-y-6">
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-5">
+                  <div>
+                    <h3 className="text-sm font-extrabold text-slate-900">Packaging Estimator</h3>
+                    <p className="text-xs text-slate-500 mt-1">Same calculation as the Packaging Tool sheet — enter the part dimensions, quantity and total weight and the packing plan updates live. Leave dimensions that do not apply blank.</p>
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                    <label className="block">
+                      <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Material Type</span>
+                      <select value={pkgMaterial} onChange={e => setPkgMaterial(e.target.value)} className="mt-1 w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-medium text-slate-700">
+                        <option value="Flat Bar">Flat Bar</option>
+                        <option value="Rod">Rod</option>
+                        <option value="Tube">Tube</option>
+                        <option value="Angle">Angle</option>
+                        <option value="Channel">Channel</option>
+                      </select>
+                    </label>
+                    <label className="block">
+                      <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Length (in)</span>
+                      <input type="number" min="0" step="any" value={pkgLength} onChange={e => setPkgLength(e.target.value)} placeholder="120" className="mt-1 w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-medium" />
+                    </label>
+                    <label className="block">
+                      <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Width (in)</span>
+                      <input type="number" min="0" step="any" value={pkgWidth} onChange={e => setPkgWidth(e.target.value)} placeholder="2" className="mt-1 w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-medium" />
+                    </label>
+                    <label className="block">
+                      <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Height (in)</span>
+                      <input type="number" min="0" step="any" value={pkgHeight} onChange={e => setPkgHeight(e.target.value)} placeholder="1" className="mt-1 w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-medium" />
+                    </label>
+                    <label className="block">
+                      <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Thickness (in)</span>
+                      <input type="number" min="0" step="any" value={pkgThickness} onChange={e => setPkgThickness(e.target.value)} placeholder="0.5" className="mt-1 w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-medium" />
+                    </label>
+                    <label className="block">
+                      <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Diameter (in)</span>
+                      <input type="number" min="0" step="any" value={pkgDiameter} onChange={e => setPkgDiameter(e.target.value)} placeholder="1" className="mt-1 w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-medium" />
+                    </label>
+                    <label className="block">
+                      <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Leg 1 (in)</span>
+                      <input type="number" min="0" step="any" value={pkgLeg1} onChange={e => setPkgLeg1(e.target.value)} placeholder="3" className="mt-1 w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-medium" />
+                    </label>
+                    <label className="block">
+                      <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Leg 2 (in)</span>
+                      <input type="number" min="0" step="any" value={pkgLeg2} onChange={e => setPkgLeg2(e.target.value)} placeholder="3" className="mt-1 w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-medium" />
+                    </label>
+                    <label className="block">
+                      <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Qty (pcs)</span>
+                      <input type="number" min="0" step="any" value={pkgQty} onChange={e => setPkgQty(e.target.value)} placeholder="20" className="mt-1 w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-medium" />
+                    </label>
+                    <label className="block">
+                      <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Total Weight (lbs)</span>
+                      <input type="number" min="0" step="any" value={pkgWeight} onChange={e => setPkgWeight(e.target.value)} placeholder="82.8" className="mt-1 w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-medium" />
+                    </label>
+                  </div>
+                  {pkgResult ? (
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div className="bg-slate-50 rounded-xl border border-slate-200 p-4">
+                        <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500 block">Package Type</span>
+                        <span className="text-base font-extrabold text-slate-900">{pkgResult.containerType}</span>
+                        <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500 block mt-4">Suggested Box</span>
+                        <span className="text-xs font-semibold text-slate-800 whitespace-pre-line">{pkgResult.suggested}</span>
+                      </div>
+                      <div className="bg-slate-50 rounded-xl border border-slate-200 p-4">
+                        <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500 block">Estimated Packing</span>
+                        <span className="text-xs font-semibold text-slate-800 whitespace-pre-line">{pkgResult.packing}</span>
+                      </div>
+                      <div className="bg-slate-50 rounded-xl border border-slate-200 p-4">
+                        <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500 block">Estimated Dimensions</span>
+                        <span className="text-xs font-semibold text-slate-800 whitespace-pre-line">{pkgResult.dims || '—'}</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-500 font-medium">Enter a length, quantity and total weight to see the packing plan.</p>
+                  )}
+                  <p className="text-[11px] text-slate-400">Rules match the sheet: over 400 lbs goes in a crate (1,960 lbs of material max, 140 lbs tare per crate), 60&quot; or under goes in a box (60 lbs max), otherwise a poly bag (150 lbs max). Crate dimensions are fixed at 125&quot; x 29&quot; x 33&quot;.</p>
+                </div>
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-3">
+                  <h3 className="text-sm font-extrabold text-slate-900">Box Settings (from the Packaging Tool Settings tab)</h3>
+                  <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-600 uppercase text-[10px] tracking-wider font-bold">
+                        <tr>
+                          <th className="py-2.5 px-3">Box Name</th>
+                          <th className="py-2.5 px-3 text-right">Length</th>
+                          <th className="py-2.5 px-3 text-right">Width</th>
+                          <th className="py-2.5 px-3 text-right">Height</th>
+                          <th className="py-2.5 px-3 text-right">Volume</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                        {PACKAGING_BOXES.map((b) => (
+                          <tr key={b[0]} className="hover:bg-blue-50/40 transition">
+                            <td className="py-2 px-3 font-bold text-slate-900">{b[0]}</td>
+                            <td className="py-2 px-3 text-right">{b[1]}</td>
+                            <td className="py-2 px-3 text-right">{b[2]}</td>
+                            <td className="py-2 px-3 text-right">{b[3]}</td>
+                            <td className="py-2 px-3 text-right text-slate-500">{b[4].toLocaleString()}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
             ) : (
               /* Fallback for any unknown tab */
               <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center max-w-2xl mx-auto my-8">
