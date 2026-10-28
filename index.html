@@ -91,6 +91,11 @@
       // Promise-date search for Open Orders: a date picker (exact day)
       // plus the text search also matching promise dates.
       const [oorDateFilter, setOorDateFilter] = useState('');
+      const [toolingSearchQuery, setToolingSearchQuery] = useState('');
+      const [inspSearchQuery, setInspSearchQuery] = useState('');
+      const [inspFilter, setInspFilter] = useState('all');
+      const [dailySearchQuery, setDailySearchQuery] = useState('');
+      const [dailyDateFilter, setDailyDateFilter] = useState('');
       // Order card modal: set to an order from openOrdersList when its
       // SO number is clicked, anywhere order numbers appear.
       const [selectedOrder, setSelectedOrder] = useState(null);
@@ -413,12 +418,14 @@
         return ratesRange.data.filter(r => r.index_ > 0 && r.row && r.row[1]).map(r => {
           const profileDie = String(r.row[1] || '').trim().toUpperCase();
           const lowestRateInHr = parseFloat(r.row[2]) || null;
+          const recordedCount = parseInt(r.row[3], 10);
           const averageRateInHr = parseFloat(r.row[4]) || null;
           if (!averageRateInHr) return null;
           return {
             profileDie,
             profileName: String(r.row[0] || '').trim(),
             lowestRateInHr,
+            recordedCount: isNaN(recordedCount) ? null : recordedCount,
             averageRateInHr,
             ftHr: averageRateInHr / 12,
             inHr: averageRateInHr
@@ -472,6 +479,108 @@
         const totalLines = inspectionLinesList.length;
         return { totalSKUs, readyInStock, backlogOrders, toolingProfiles, activeLines, totalLines };
       }, [inventoryList, openOrdersList, ratesList, inspectionLinesList]);
+
+      // Daily Shipments range. NOTE (2026-10-28): the Apps Script
+      // action=leadtime feed currently returns only Sales 2.0, OOR,
+      // Master Part 2.0, RatesByProfile and Inspection Sheet — it does
+      // NOT include Daily Shipments yet. The Daily Shipments tab below
+      // looks for a feed entry named exactly "Daily Shipments" and shows
+      // an empty-state explaining this until the script is updated and
+      // redeployed with that tab added to the leadtime response.
+      const dailyRange = data?.find(d => d.name === 'Daily Shipments') || null;
+
+      // Parse Daily Shipments. Header is row 1; data from row 2.
+      // Columns: B Promise Date, C Tracking, D Order #, E Order Date,
+      // F CSR, G PO, H Ship Via, L Customer Name, M Item Code,
+      // N Description, O UOM, P Quantity Ordered, V Profile Die,
+      // W Color, AC Weigh in lbs.
+      const dailyShipmentsList = useMemo(() => {
+        if (!dailyRange?.data) return [];
+        return dailyRange.data.filter(r => r.index_ > 0 && r.row && r.row[3]).map(r => {
+          const promiseDateRaw = String(r.row[1] || '').trim();
+          const qty = parseFloat(String(r.row[15] || '').replace(/,/g, '')) || 0;
+          const weight = parseFloat(String(r.row[28] || '').replace(/,/g, '')) || null;
+          return {
+            id: `${r.row[3]}-${r.row[12]}`,
+            promiseDate: formatRawDate(promiseDateRaw),
+            promiseDateRaw,
+            tracking: String(r.row[2] || '').trim(),
+            soNum: String(r.row[3] || '').trim(),
+            orderDate: formatRawDate(String(r.row[4] || '').trim()),
+            csr: String(r.row[5] || '').trim().toUpperCase(),
+            po: String(r.row[6] || '').trim(),
+            shipVia: String(r.row[7] || '').trim(),
+            customer: String(r.row[11] || '').trim(),
+            itemPart: String(r.row[12] || '').trim(),
+            description: String(r.row[13] || '').trim(),
+            uom: String(r.row[14] || '').trim(),
+            qty,
+            profileDie: String(r.row[21] || '').trim(),
+            color: String(r.row[22] || '').trim(),
+            weight
+          };
+        });
+      }, [dailyRange]);
+
+      // Filtered lists for the Tooling, Inspection and Daily Shipments
+      // tabs. Daily shipments are shown newest promise date first (they
+      // are shipped history); the OOR tab keeps earliest promise first.
+      const filteredRates = useMemo(() => {
+        const q = toolingSearchQuery.trim().toLowerCase();
+        const list = q ? ratesList.filter(r =>
+          r.profileDie.toLowerCase().includes(q) ||
+          r.profileName.toLowerCase().includes(q)
+        ) : ratesList;
+        return [...list].sort((a, b) => a.profileDie.localeCompare(b.profileDie));
+      }, [ratesList, toolingSearchQuery]);
+
+      const filteredInspectionLines = useMemo(() => {
+        const q = inspSearchQuery.trim().toLowerCase();
+        return inspectionLinesList.filter(l => {
+          if (inspFilter === 'inline' && !l.isActive) return false;
+          if (!q) return true;
+          return (
+            String(l.lineNum).toLowerCase().includes(q) ||
+            l.partNum.toLowerCase().includes(q) ||
+            l.dieNum.toLowerCase().includes(q) ||
+            l.resin.toLowerCase().includes(q) ||
+            l.color.toLowerCase().includes(q)
+          );
+        }).sort((a, b) => (parseInt(a.lineNum, 10) || 0) - (parseInt(b.lineNum, 10) || 0));
+      }, [inspectionLinesList, inspSearchQuery, inspFilter]);
+
+      const filteredDailyShipments = useMemo(() => {
+        const parsePromise = (dStr) => {
+          const dt = parseSafeDate(String(dStr || ''));
+          return isNaN(dt.getTime()) ? null : dt;
+        };
+        return dailyShipmentsList.filter(row => {
+          if (dailyDateFilter) {
+            const dt = parseSafeDate(String(row.promiseDateRaw || ''));
+            const ymd = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+            if (ymd !== dailyDateFilter) return false;
+          }
+          if (!dailySearchQuery) return true;
+          const q = dailySearchQuery.toLowerCase();
+          return (
+            row.soNum.toLowerCase().includes(q) ||
+            row.customer.toLowerCase().includes(q) ||
+            row.itemPart.toLowerCase().includes(q) ||
+            row.tracking.toLowerCase().includes(q) ||
+            row.shipVia.toLowerCase().includes(q) ||
+            (row.po || '').toLowerCase().includes(q) ||
+            row.promiseDate.toLowerCase().includes(q) ||
+            String(row.promiseDateRaw || '').toLowerCase().includes(q)
+          );
+        }).sort((a, b) => {
+          const da = parsePromise(a.promiseDateRaw);
+          const db = parsePromise(b.promiseDateRaw);
+          if (da && db) return db - da;
+          if (da) return -1;
+          if (db) return 1;
+          return 0;
+        });
+      }, [dailyShipmentsList, dailySearchQuery, dailyDateFilter]);
 
       // Summary list of dies with backlog for OOR tab carousel
       const oorDieSummaries = useMemo(() => {
@@ -872,15 +981,15 @@
                 Inspection Sheet (In-Line Dies)
               </button>
               <button
-                onClick={() => setActiveTab('rules')}
+                onClick={() => setActiveTab('daily')}
                 className={`py-3 flex items-center gap-2 border-b-2 transition whitespace-nowrap ${
-                  activeTab === 'rules'
+                  activeTab === 'daily'
                     ? 'border-blue-600 text-blue-600 font-bold'
                     : 'border-transparent hover:text-slate-700'
                 }`}
               >
-                <ShieldCheck className="w-4 h-4" />
-                Lead Time Policy Rules
+                <Truck className="w-4 h-4" />
+                Daily Shipments
               </button>
             </div>
           </div>
@@ -1651,8 +1760,219 @@
                   <span>Use the Profile Die dropdown above to filter orders</span>
                 </div>
               </div>
+            ) : activeTab === 'tooling' ? (
+              /* TAB 4: TOOLING SPECS & RATES (RatesByProfile) */
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
+                <div className="flex flex-col md:flex-row items-center justify-between gap-3">
+                  <div className="relative flex-1 max-w-md w-full">
+                    <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
+                    <input
+                      type="text"
+                      value={toolingSearchQuery}
+                      onChange={e => setToolingSearchQuery(e.target.value)}
+                      placeholder="Search profile die or profile name..."
+                      className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium"
+                    />
+                  </div>
+                  <div className="text-xs font-semibold text-slate-500">
+                    Showing {filteredRates.length} of {ratesList.length} profile dies — rates in inches/hour
+                  </div>
+                </div>
+                <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-600 uppercase text-[10px] tracking-wider font-bold">
+                      <tr>
+                        <th className="py-3 px-3">Profile Die</th>
+                        <th className="py-3 px-3">Profile Name</th>
+                        <th className="py-3 px-3 text-right">Lowest Rate (in/hr)</th>
+                        <th className="py-3 px-3 text-right">Average Rate (in/hr)</th>
+                        <th className="py-3 px-3 text-right">Average Rate (ft/hr)</th>
+                        <th className="py-3 px-3 text-right">Recorded Rates</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                      {filteredRates.map((r) => (
+                        <tr key={r.profileDie} className="hover:bg-blue-50/40 transition">
+                          <td className="py-2.5 px-3">
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200">{r.profileDie}</span>
+                          </td>
+                          <td className="py-2.5 px-3 font-medium text-slate-900">{r.profileName || '—'}</td>
+                          <td className="py-2.5 px-3 text-right">{r.lowestRateInHr != null ? r.lowestRateInHr.toLocaleString() : '—'}</td>
+                          <td className="py-2.5 px-3 text-right font-extrabold text-slate-900">{r.averageRateInHr.toLocaleString()}</td>
+                          <td className="py-2.5 px-3 text-right">{r.ftHr.toFixed(1)}</td>
+                          <td className="py-2.5 px-3 text-right text-slate-500">{r.recordedCount != null ? r.recordedCount : '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="text-[11px] text-slate-400">
+                  Lead times use the average rate in inches/hour. Dies with no average rate in RatesByProfile are not listed here and show “Rate not found” in the calculator.
+                </div>
+              </div>
+            ) : activeTab === 'inspection' ? (
+              /* TAB 5: INSPECTION SHEET (IN-LINE DIES) */
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
+                <div className="flex flex-col md:flex-row items-center justify-between gap-3">
+                  <div className="flex flex-wrap items-center gap-3 w-full md:w-auto flex-1">
+                    <div className="relative flex-1 max-w-md">
+                      <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
+                      <input
+                        type="text"
+                        value={inspSearchQuery}
+                        onChange={e => setInspSearchQuery(e.target.value)}
+                        placeholder="Search line #, part, die, resin, color..."
+                        className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium"
+                      />
+                    </div>
+                    <select
+                      value={inspFilter}
+                      onChange={e => setInspFilter(e.target.value)}
+                      className="px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-medium text-slate-700"
+                    >
+                      <option value="all">All Lines ({inspectionLinesList.length})</option>
+                      <option value="inline">In-Line Only ({kpis.activeLines})</option>
+                    </select>
+                  </div>
+                  <div className="text-xs font-semibold text-slate-500">
+                    {kpis.activeLines} of {kpis.totalLines} lines in line — resin + target rate
+                  </div>
+                </div>
+                <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-600 uppercase text-[10px] tracking-wider font-bold">
+                      <tr>
+                        <th className="py-3 px-3 text-center">Line #</th>
+                        <th className="py-3 px-3">Part #</th>
+                        <th className="py-3 px-3 text-center">Die #</th>
+                        <th className="py-3 px-3">Resin</th>
+                        <th className="py-3 px-3">Color</th>
+                        <th className="py-3 px-3 text-right">Measured In/Hr</th>
+                        <th className="py-3 px-3 text-right">Target Rate In/Hr</th>
+                        <th className="py-3 px-3 text-center">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                      {filteredInspectionLines.map((l, idx) => (
+                        <tr key={`${l.lineNum}-${l.dieNum}-${idx}`} className="hover:bg-blue-50/40 transition">
+                          <td className="py-2.5 px-3 text-center font-bold text-slate-900">{l.lineNum || '—'}</td>
+                          <td className="py-2.5 px-3 font-medium text-slate-900">{l.partNum || '—'}</td>
+                          <td className="py-2.5 px-3 text-center">
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200">{l.dieNum || '—'}</span>
+                          </td>
+                          <td className="py-2.5 px-3">{l.resin || '—'}</td>
+                          <td className="py-2.5 px-3">{l.color || '—'}</td>
+                          <td className="py-2.5 px-3 text-right">{l.inHr > 0 ? l.inHr.toLocaleString() : '—'}</td>
+                          <td className="py-2.5 px-3 text-right font-semibold">{l.targetRate > 0 ? l.targetRate.toLocaleString() : '—'}</td>
+                          <td className="py-2.5 px-3 text-center">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${l.isActive ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600'}`}>
+                              {l.isActive ? 'In Line' : 'Not In Line'}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="text-[11px] text-slate-400">
+                  A line counts as in line when it has a resin and a target rate. In-line dies skip the 10-day setup in lead-time calculations.
+                </div>
+              </div>
+            ) : activeTab === 'daily' ? (
+              /* TAB 6: DAILY SHIPMENTS */
+              dailyRange ? (
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
+                  <div className="flex flex-col md:flex-row items-center justify-between gap-3">
+                    <div className="flex flex-wrap items-center gap-3 w-full md:w-auto flex-1">
+                      <div className="relative flex-1 max-w-md">
+                        <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
+                        <input
+                          type="text"
+                          value={dailySearchQuery}
+                          onChange={e => setDailySearchQuery(e.target.value)}
+                          placeholder="Search SO #, customer, part, tracking, PO, or date..."
+                          className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium"
+                        />
+                      </div>
+                      <input
+                        type="date"
+                        value={dailyDateFilter}
+                        onChange={e => setDailyDateFilter(e.target.value)}
+                        title="Show only shipments promised on this date"
+                        className="px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-medium text-slate-700"
+                      />
+                      {dailyDateFilter && (
+                        <button
+                          onClick={() => setDailyDateFilter('')}
+                          title="Clear date filter"
+                          className="px-2.5 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-500 hover:bg-slate-100"
+                        >
+                          × Clear date
+                        </button>
+                      )}
+                    </div>
+                    <div className="text-xs font-semibold text-slate-500">
+                      Showing {filteredDailyShipments.length} of {dailyShipmentsList.length} shipments — newest first
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-600 uppercase text-[10px] tracking-wider font-bold">
+                        <tr>
+                          <th className="py-3 px-3 text-center">Promise Date</th>
+                          <th className="py-3 px-3">Tracking</th>
+                          <th className="py-3 px-3">SO #</th>
+                          <th className="py-3 px-3">Customer</th>
+                          <th className="py-3 px-3">Item / Part</th>
+                          <th className="py-3 px-3 text-right">Qty</th>
+                          <th className="py-3 px-3">UOM</th>
+                          <th className="py-3 px-3">Ship Via</th>
+                          <th className="py-3 px-3 text-right">Weight (lbs)</th>
+                          <th className="py-3 px-3 text-center">Profile Die</th>
+                          <th className="py-3 px-3 text-center">Color</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                        {filteredDailyShipments.map((row) => (
+                          <tr key={row.id} className="hover:bg-blue-50/40 transition">
+                            <td className="py-2.5 px-3 text-center font-medium text-slate-800 text-[11px]">{row.promiseDate}</td>
+                            <td className="py-2.5 px-3 text-slate-600 whitespace-pre-line break-all max-w-[180px]">{row.tracking || '—'}</td>
+                            <td className="py-2.5 px-3 font-bold text-blue-600">{row.soNum}</td>
+                            <td className="py-2.5 px-3 font-medium text-slate-900">{row.customer}</td>
+                            <td className="py-2.5 px-3 text-slate-600 font-medium">{row.itemPart}</td>
+                            <td className="py-2.5 px-3 text-right font-extrabold text-slate-900">{row.qty.toLocaleString()}</td>
+                            <td className="py-2.5 px-3 text-slate-500">{row.uom}</td>
+                            <td className="py-2.5 px-3 text-slate-600">{row.shipVia || '—'}</td>
+                            <td className="py-2.5 px-3 text-right">{row.weight != null ? row.weight.toLocaleString() : '—'}</td>
+                            <td className="py-2.5 px-3 text-center">
+                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200">{row.profileDie || '—'}</span>
+                            </td>
+                            <td className="py-2.5 px-3 text-center text-slate-500">{row.color || '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ) : (
+                <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center max-w-2xl mx-auto my-8">
+                  <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-3">
+                    <Truck className="w-6 h-6" />
+                  </div>
+                  <h3 className="text-base font-bold text-slate-900">Daily Shipments not in the data feed yet</h3>
+                  <p className="text-xs text-slate-500 mt-2 max-w-md mx-auto leading-relaxed">
+                    This tab is ready, but the Google Apps Script feed behind the app does not send the Daily Shipments tab yet — it currently sends Sales 2.0, OOR, Master Part 2.0, RatesByProfile and Inspection Sheet only. Add the Daily Shipments tab to the script&apos;s leadtime response (same pattern as the other tabs, named exactly “Daily Shipments”) and redeploy the script as a new version, then this tab will fill in on the next refresh.
+                  </p>
+                  <button
+                    onClick={() => setActiveTab('leadtime')}
+                    className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-xl text-xs font-semibold hover:bg-blue-700 transition"
+                  >
+                    Return to Lead Time Calculator
+                  </button>
+                </div>
+              )
             ) : (
-              /* Fallback for other tabs */
+              /* Fallback for any unknown tab */
               <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center max-w-2xl mx-auto my-8">
                 <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-3">
                   <Layers className="w-6 h-6" />
