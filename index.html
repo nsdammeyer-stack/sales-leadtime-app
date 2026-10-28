@@ -88,6 +88,11 @@
       // Tab 3: OOR View Filter States
       const [oorSearchQuery, setOorSearchQuery] = useState('');
       const [oorSelectedDie, setOorSelectedDie] = useState('ALL');
+      // Note: the OOR table used to hard-cap at 50 rows, and because rows
+      // are sorted by promise date earliest first, the 50th row happened
+      // to promise 2026-10-23 -- so the tab looked like it stopped at
+      // October 23 even though all orders were loaded. It now renders
+      // every filtered row so the user just scrolls.
 
       // Fetch live data from Google Sheets.
       // Initial load: shows the spinner and, on failure, the error screen.
@@ -1485,7 +1490,7 @@
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
-                      {filteredOorOrders.slice(0, 50).map((row) => (
+                      {filteredOorOrders.map((row) => (
                         <tr key={row.id} className="hover:bg-blue-50/40 transition">
                           <td className="py-2.5 px-3 font-bold text-blue-600">{row.soNum}</td>
                           <td className="py-2.5 px-3 font-medium text-slate-900">{row.customer}</td>
@@ -1519,7 +1524,7 @@
 
                 <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1">
                   <span>
-                    Showing {Math.min(50, filteredOorOrders.length)} of {filteredOorOrders.length} records
+                    Showing all {filteredOorOrders.length} records — scroll to see them all
                   </span>
                   <span>Use the Profile Die dropdown above to filter orders</span>
                 </div>
