@@ -36,6 +36,14 @@
     // =========================================================================
     const API_URL = "https://script.google.com/macros/s/AKfycbzyYSr3-UnFMnUYsxf9oNdG8wJqM4g5W8TO_NfM0s71cJjwZw3RdTUkp5gaBDGLtFsh/exec?action=leadtime";
 
+    // Simple casual password gate. This is NOT real security: the
+    // password is visible in this file, and the Apps Script data
+    // endpoint is open to anyone with its URL. It only keeps casual
+    // visitors from opening the app. Only an "unlocked" flag is stored
+    // in sessionStorage, never the password itself.
+    const GATE_PASSWORD = "3311";
+    const GATE_SESSION_KEY = "sales-leadtime-unlocked";
+
     function App() {
       const [data, setData] = useState(null);
       const [loading, setLoading] = useState(true);
@@ -46,6 +54,18 @@
       const [refreshing, setRefreshing] = useState(false);
       const [refreshError, setRefreshError] = useState(null);
       const [lastUpdated, setLastUpdated] = useState(null);
+      // Password gate state. sessionStorage means the gate asks once per
+      // browser session: closing the browser asks again, but the
+      // 30-minute background refreshes never re-prompt.
+      const [authorized, setAuthorized] = useState(() => {
+        try {
+          return sessionStorage.getItem(GATE_SESSION_KEY) === "ok";
+        } catch (e) {
+          return false;
+        }
+      });
+      const [gateInput, setGateInput] = useState("");
+      const [gateError, setGateError] = useState(false);
       const [activeTab, setActiveTab] = useState('leadtime');
 
       // Inquiry & Calculation States
@@ -108,6 +128,8 @@
       };
 
       useEffect(() => {
+        // No data is fetched at all until the gate is unlocked.
+        if (!authorized) return;
         fetchData();
         // Background refresh every 30 minutes. The timer is cleaned up
         // when the app unmounts, and browsers throttle timers in hidden
@@ -115,7 +137,7 @@
         // endpoint at full rate.
         const timer = setInterval(() => fetchData(true), 30 * 60 * 1000);
         return () => clearInterval(timer);
-      }, []);
+      }, [authorized]);
 
       // Date & Business Day Helpers
       const parseSafeDate = (dStr) => {
@@ -545,6 +567,57 @@
           return true;
         });
       }, [inventoryList, invSearchQuery, invFilterStock]);
+
+      if (!authorized) {
+        const submitGate = (e) => {
+          if (e) e.preventDefault();
+          if (gateInput === GATE_PASSWORD) {
+            try {
+              sessionStorage.setItem(GATE_SESSION_KEY, "ok");
+            } catch (err) {
+              // Private browsing may block sessionStorage; the session
+              // still unlocks in memory for this page load.
+            }
+            setGateError(false);
+            setGateInput("");
+            setAuthorized(true);
+          } else {
+            setGateError(true);
+            setGateInput("");
+          }
+        };
+        return (
+          <div className="min-h-screen bg-slate-100 flex flex-col items-center justify-center p-6 text-center">
+            <div className="bg-white p-8 rounded-2xl border border-slate-200 max-w-sm w-full shadow-sm">
+              <div className="bg-blue-600 text-white p-2.5 rounded-2xl shadow-sm w-fit mx-auto mb-3">
+                <Clock className="w-7 h-7" />
+              </div>
+              <h2 className="text-base font-bold text-slate-900">Sales Lead Time Calculator & Stock Inquiry</h2>
+              <p className="text-xs text-slate-500 mt-1">Enter the password to open the app.</p>
+              <form onSubmit={submitGate} className="mt-5 space-y-3">
+                <input
+                  type="password"
+                  value={gateInput}
+                  onChange={e => setGateInput(e.target.value)}
+                  placeholder="Password"
+                  autoFocus
+                  className="w-full border border-slate-300 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                />
+                {gateError && (
+                  <p className="text-xs font-semibold text-rose-600">Incorrect password. Please try again.</p>
+                )}
+                <button
+                  type="submit"
+                  className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-semibold hover:bg-blue-700 transition"
+                >
+                  Unlock
+                </button>
+              </form>
+              <p className="text-[11px] text-slate-400 mt-4">You will be asked again when you close the browser.</p>
+            </div>
+          </div>
+        );
+      }
 
       if (loading) {
         return (
