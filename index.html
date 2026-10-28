@@ -192,6 +192,22 @@
       return results.join('\n');
     }
 
+    // Which boxes the sales team needs to fill in for each material type.
+    // Total Weight is required for every type: it picks Crate vs Box vs
+    // Bag and sets the weight per piece. Other boxes are dimmed, not
+    // cleared, when switching materials.
+    const PKG_REQUIRED_FIELDS = {
+      'Flat Bar': ['length', 'width', 'thickness', 'qty', 'weight'],
+      'Rod': ['length', 'diameter', 'qty', 'weight'],
+      'Tube': ['length', 'diameter', 'qty', 'weight'],
+      'Angle': ['length', 'leg1', 'leg2', 'qty', 'weight'],
+      'Channel': ['length', 'width', 'height', 'thickness', 'qty', 'weight'],
+    };
+    const PKG_FIELD_LABELS = {
+      length: 'Length', width: 'Width', height: 'Height', thickness: 'Thickness',
+      diameter: 'Diameter', leg1: 'Leg 1', leg2: 'Leg 2', qty: 'Qty', weight: 'Total Weight',
+    };
+
     function App() {
       const [data, setData] = useState(null);
       const [loading, setLoading] = useState(true);
@@ -751,8 +767,29 @@
       // Packaging estimator result: recomputed live as the form changes,
       // the way the sheet's formulas recalculate. Package type follows
       // the sheet's language: over 400 lbs is a Crate, otherwise length
-      // 60" or under is a Box, otherwise a Poly Bag.
+      // 60" or under is a Box, otherwise a Poly Bag. Nothing is shown
+      // until every box required for the selected material is filled in,
+      // so a defaulted dimension can never silently stand in for a real one.
+      const pkgRequired = PKG_REQUIRED_FIELDS[pkgMaterial] || [];
+      const pkgValues = { length: pkgLength, width: pkgWidth, height: pkgHeight, thickness: pkgThickness, diameter: pkgDiameter, leg1: pkgLeg1, leg2: pkgLeg2, qty: pkgQty, weight: pkgWeight };
+      const pkgMissing = pkgRequired.filter((k) => {
+        const v = pkgValues[k];
+        const n = parseFloat(v);
+        return v === '' || v == null || isNaN(n) || n <= 0;
+      });
+      const pkgFields = [
+        { key: 'length', label: 'Length (in)', placeholder: '120', value: pkgLength, set: setPkgLength },
+        { key: 'width', label: 'Width (in)', placeholder: '2', value: pkgWidth, set: setPkgWidth },
+        { key: 'height', label: 'Height (in)', placeholder: '1', value: pkgHeight, set: setPkgHeight },
+        { key: 'thickness', label: 'Thickness (in)', placeholder: '0.5', value: pkgThickness, set: setPkgThickness },
+        { key: 'diameter', label: 'Diameter (in)', placeholder: '1', value: pkgDiameter, set: setPkgDiameter },
+        { key: 'leg1', label: 'Leg 1 (in)', placeholder: '3', value: pkgLeg1, set: setPkgLeg1 },
+        { key: 'leg2', label: 'Leg 2 (in)', placeholder: '3', value: pkgLeg2, set: setPkgLeg2 },
+        { key: 'qty', label: 'Qty (pcs)', placeholder: '20', value: pkgQty, set: setPkgQty },
+        { key: 'weight', label: 'Total Weight (lbs)', placeholder: '82.8', value: pkgWeight, set: setPkgWeight },
+      ];
       const pkgResult = useMemo(() => {
+        if (pkgMissing.length > 0) return null;
         const num = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
         const length = num(pkgLength), qty = num(pkgQty), weight = num(pkgWeight);
         if (!qty || qty <= 0 || !weight || weight <= 0 || !length || length <= 0) return null;
@@ -2172,55 +2209,19 @@
                 <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-5">
                   <div>
                     <h3 className="text-sm font-extrabold text-slate-900">Packaging Estimator</h3>
-                    <p className="text-xs text-slate-500 mt-1">Same calculation as the Packaging Tool sheet — enter the part dimensions, quantity and total weight and the packing plan updates live. Leave dimensions that do not apply blank.</p>
+                    <p className="text-xs text-slate-500 mt-1">Same calculation as the Packaging Tool sheet — the packing plan updates live as you type. The boxes you need for the selected material are highlighted in blue; the rest are dimmed and can stay blank.</p>
                   </div>
+                  <p className="text-xs font-semibold text-blue-700">For {pkgMaterial}, fill in: {pkgRequired.map((k) => PKG_FIELD_LABELS[k]).join(', ')}.</p>
                   <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                    <label className="block">
-                      <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Material Type</span>
-                      <select value={pkgMaterial} onChange={e => setPkgMaterial(e.target.value)} className="mt-1 w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-medium text-slate-700">
-                        <option value="Flat Bar">Flat Bar</option>
-                        <option value="Rod">Rod</option>
-                        <option value="Tube">Tube</option>
-                        <option value="Angle">Angle</option>
-                        <option value="Channel">Channel</option>
-                      </select>
-                    </label>
-                    <label className="block">
-                      <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Length (in)</span>
-                      <input type="number" min="0" step="any" value={pkgLength} onChange={e => setPkgLength(e.target.value)} placeholder="120" className="mt-1 w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-medium" />
-                    </label>
-                    <label className="block">
-                      <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Width (in)</span>
-                      <input type="number" min="0" step="any" value={pkgWidth} onChange={e => setPkgWidth(e.target.value)} placeholder="2" className="mt-1 w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-medium" />
-                    </label>
-                    <label className="block">
-                      <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Height (in)</span>
-                      <input type="number" min="0" step="any" value={pkgHeight} onChange={e => setPkgHeight(e.target.value)} placeholder="1" className="mt-1 w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-medium" />
-                    </label>
-                    <label className="block">
-                      <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Thickness (in)</span>
-                      <input type="number" min="0" step="any" value={pkgThickness} onChange={e => setPkgThickness(e.target.value)} placeholder="0.5" className="mt-1 w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-medium" />
-                    </label>
-                    <label className="block">
-                      <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Diameter (in)</span>
-                      <input type="number" min="0" step="any" value={pkgDiameter} onChange={e => setPkgDiameter(e.target.value)} placeholder="1" className="mt-1 w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-medium" />
-                    </label>
-                    <label className="block">
-                      <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Leg 1 (in)</span>
-                      <input type="number" min="0" step="any" value={pkgLeg1} onChange={e => setPkgLeg1(e.target.value)} placeholder="3" className="mt-1 w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-medium" />
-                    </label>
-                    <label className="block">
-                      <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Leg 2 (in)</span>
-                      <input type="number" min="0" step="any" value={pkgLeg2} onChange={e => setPkgLeg2(e.target.value)} placeholder="3" className="mt-1 w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-medium" />
-                    </label>
-                    <label className="block">
-                      <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Qty (pcs)</span>
-                      <input type="number" min="0" step="any" value={pkgQty} onChange={e => setPkgQty(e.target.value)} placeholder="20" className="mt-1 w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-medium" />
-                    </label>
-                    <label className="block">
-                      <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Total Weight (lbs)</span>
-                      <input type="number" min="0" step="any" value={pkgWeight} onChange={e => setPkgWeight(e.target.value)} placeholder="82.8" className="mt-1 w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-medium" />
-                    </label>
+                    {pkgFields.map((f) => {
+                      const required = pkgRequired.includes(f.key);
+                      return (
+                        <label key={f.key} className="block">
+                          <span className={`text-[10px] uppercase font-bold tracking-wider ${required ? 'text-blue-700' : 'text-slate-400'}`}>{f.label}{required ? ' *' : ''}</span>
+                          <input type="number" min="0" step="any" value={f.value} onChange={e => f.set(e.target.value)} placeholder={f.placeholder} className={`mt-1 w-full px-3 py-2 text-xs border rounded-xl font-medium ${required ? 'bg-white border-blue-300 ring-1 ring-blue-100 text-slate-900' : 'bg-slate-50 border-slate-200 text-slate-500'}`} />
+                        </label>
+                      );
+                    })}
                   </div>
                   {pkgResult ? (
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -2240,7 +2241,7 @@
                       </div>
                     </div>
                   ) : (
-                    <p className="text-xs text-slate-500 font-medium">Enter a length, quantity and total weight to see the packing plan.</p>
+                    <p className="text-xs text-slate-500 font-medium">{pkgMissing.length > 0 ? (<>Still needed for {pkgMaterial}: <span className="font-bold text-blue-700">{pkgMissing.map((k) => PKG_FIELD_LABELS[k]).join(', ')}</span></>) : 'Enter a length, quantity and total weight to see the packing plan.'}</p>
                   )}
                   <p className="text-[11px] text-slate-400">Rules match the sheet: over 400 lbs goes in a crate (1,960 lbs of material max, 140 lbs tare per crate), 60&quot; or under goes in a box (60 lbs max), otherwise a poly bag (150 lbs max). Crate dimensions are fixed at 125&quot; x 29&quot; x 33&quot;.</p>
                 </div>
