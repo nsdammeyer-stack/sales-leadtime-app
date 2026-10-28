@@ -199,23 +199,31 @@
     const PKG_REQUIRED_FIELDS = {
       'Flat Bar': ['length', 'width', 'thickness', 'qty'],
       'Rod': ['length', 'diameter', 'qty'],
-      'Tube': ['length', 'diameter', 'qty'],
+      'Tube': ['length', 'diameter', 'wall', 'qty'],
       'Angle': ['length', 'leg1', 'leg2', 'qty'],
       'Channel': ['length', 'width', 'height', 'thickness', 'qty'],
     };
     const PKG_FIELD_LABELS = {
       length: 'Length', width: 'Width', height: 'Height', thickness: 'Thickness',
-      diameter: 'Diameter', leg1: 'Leg 1', leg2: 'Leg 2', qty: 'Qty', weight: 'Total Weight',
+      diameter: 'Diameter', wall: 'Wall Thickness', leg1: 'Leg 1', leg2: 'Leg 2', qty: 'Qty', weight: 'Total Weight',
     };
 
     // Estimated total weight, ported from the Packaging Tool sheet's
     // Total Weight formula: UHMW at 0.0345 lb/in^3 times length times
     // the profile cross-section times quantity. This is a calculated
     // value, not an input — the sheet never asked for a weight either.
-    function estimatePkgWeight(materialType, length, width, height, thickness, diameter, leg1, leg2, qty) {
+    // Tube goes one better than the sheet (whose formula has no tube
+    // case): a hollow cross-section from OD and wall thickness, so tube
+    // weights are accurate instead of solid-round estimates.
+    function estimatePkgWeight(materialType, length, width, height, thickness, diameter, leg1, leg2, qty, wallThickness) {
       if (!qty || qty <= 0 || !length || length <= 0) return 0;
       var area = 0;
-      if (materialType === 'Rod' || materialType === 'Tube') area = Math.PI * Math.pow(diameter / 2, 2);
+      if (materialType === 'Rod') area = Math.PI * Math.pow(diameter / 2, 2);
+      else if (materialType === 'Tube') {
+        var innerDiameter = diameter - 2 * wallThickness;
+        if (innerDiameter < 0) return 0;
+        area = Math.PI * (Math.pow(diameter / 2, 2) - Math.pow(innerDiameter / 2, 2));
+      }
       else if (materialType === 'Flat Bar') area = width * thickness;
       else if (materialType === 'Angle') area = (leg1 + leg2 - thickness) * thickness;
       else if (materialType === 'Channel') area = (width + 2 * height - 2 * thickness) * thickness;
@@ -284,6 +292,7 @@
       const [pkgHeight, setPkgHeight] = useState('');
       const [pkgThickness, setPkgThickness] = useState('');
       const [pkgDiameter, setPkgDiameter] = useState('');
+      const [pkgWall, setPkgWall] = useState('');
       const [pkgLeg1, setPkgLeg1] = useState('');
       const [pkgLeg2, setPkgLeg2] = useState('');
       const [pkgQty, setPkgQty] = useState('');
@@ -786,7 +795,7 @@
       // until every box required for the selected material is filled in,
       // so a defaulted dimension can never silently stand in for a real one.
       const pkgRequired = PKG_REQUIRED_FIELDS[pkgMaterial] || [];
-      const pkgValues = { length: pkgLength, width: pkgWidth, height: pkgHeight, thickness: pkgThickness, diameter: pkgDiameter, leg1: pkgLeg1, leg2: pkgLeg2, qty: pkgQty };
+      const pkgValues = { length: pkgLength, width: pkgWidth, height: pkgHeight, thickness: pkgThickness, diameter: pkgDiameter, wall: pkgWall, leg1: pkgLeg1, leg2: pkgLeg2, qty: pkgQty };
       const pkgMissing = pkgRequired.filter((k) => {
         const v = pkgValues[k];
         const n = parseFloat(v);
@@ -798,15 +807,18 @@
         { key: 'height', label: 'Height (in)', placeholder: '1', value: pkgHeight, set: setPkgHeight },
         { key: 'thickness', label: 'Thickness (in)', placeholder: '0.5', value: pkgThickness, set: setPkgThickness },
         { key: 'diameter', label: 'Diameter (in)', placeholder: '1', value: pkgDiameter, set: setPkgDiameter },
+        { key: 'wall', label: 'Wall Thickness (in)', placeholder: '0.25', value: pkgWall, set: setPkgWall },
         { key: 'leg1', label: 'Leg 1 (in)', placeholder: '3', value: pkgLeg1, set: setPkgLeg1 },
         { key: 'leg2', label: 'Leg 2 (in)', placeholder: '3', value: pkgLeg2, set: setPkgLeg2 },
         { key: 'qty', label: 'Qty (pcs)', placeholder: '20', value: pkgQty, set: setPkgQty },
       ];
+      const pkgNum = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
+      const pkgTubeWallInvalid = pkgMaterial === 'Tube' && pkgNum(pkgDiameter) > 0 && pkgNum(pkgWall) > 0 && pkgNum(pkgWall) >= pkgNum(pkgDiameter) / 2;
       const pkgResult = useMemo(() => {
-        if (pkgMissing.length > 0) return null;
+        if (pkgMissing.length > 0 || pkgTubeWallInvalid) return null;
         const num = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
         const length = num(pkgLength), qty = num(pkgQty);
-        const weight = estimatePkgWeight(pkgMaterial, length, num(pkgWidth), num(pkgHeight), num(pkgThickness), num(pkgDiameter), num(pkgLeg1), num(pkgLeg2), qty);
+        const weight = estimatePkgWeight(pkgMaterial, length, num(pkgWidth), num(pkgHeight), num(pkgThickness), num(pkgDiameter), num(pkgLeg1), num(pkgLeg2), qty, num(pkgWall));
         if (!qty || qty <= 0 || !weight || weight <= 0 || !length || length <= 0) return null;
         const packing = estimatePacking(pkgMaterial, length, num(pkgWidth), num(pkgHeight), num(pkgThickness), num(pkgDiameter), num(pkgLeg1), num(pkgLeg2), qty, weight);
         if (!packing) return null;
@@ -814,7 +826,7 @@
         const dims = estimateDims(pkgMaterial, length, num(pkgWidth), num(pkgHeight), num(pkgThickness), num(pkgDiameter), num(pkgLeg1), num(pkgLeg2), qty, weight, packing, PACKAGING_BOXES);
         const containerType = weight > 400 ? 'Crate' : (length <= 60 ? 'Box' : 'Poly Bag');
         return { packing, suggested, dims, containerType, weight };
-      }, [pkgMaterial, pkgLength, pkgWidth, pkgHeight, pkgThickness, pkgDiameter, pkgLeg1, pkgLeg2, pkgQty]);
+      }, [pkgMaterial, pkgLength, pkgWidth, pkgHeight, pkgThickness, pkgDiameter, pkgWall, pkgLeg1, pkgLeg2, pkgQty]);
 
       // Summary list of dies with backlog for OOR tab carousel
       const oorDieSummaries = useMemo(() => {
@@ -2224,7 +2236,7 @@
                 <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-5">
                   <div>
                     <h3 className="text-sm font-extrabold text-slate-900">Packaging Estimator</h3>
-                    <p className="text-xs text-slate-500 mt-1">Same calculation as the Packaging Tool sheet — enter the dimensions and quantity and the weight is calculated from them, then the packing plan. The boxes you need for the selected material are highlighted in blue; the rest are dimmed and can stay blank.</p>
+                    <p className="text-xs text-slate-500 mt-1">Same calculation as the Packaging Tool sheet — enter the dimensions and quantity and the weight is calculated from them, then the packing plan. Tubes also ask for wall thickness so their weight is exact, not a solid-round estimate. The boxes you need for the selected material are highlighted in blue; the rest are dimmed and can stay blank.</p>
                   </div>
                   <p className="text-xs font-semibold text-blue-700">For {pkgMaterial}, fill in: {pkgRequired.map((k) => PKG_FIELD_LABELS[k]).join(', ')}.</p>
                   <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
@@ -2257,11 +2269,10 @@
                         <span className="text-xs font-semibold text-slate-800 whitespace-pre-line">{pkgResult.dims || '—'}</span>
                       </div>
                     </div>
+                  ) : pkgTubeWallInvalid ? (
+                    <p className="text-xs font-semibold text-amber-600">Wall thickness must be less than half the diameter — otherwise there is no hollow center left.</p>
                   ) : (
-                    <p className="text-xs text-slate-500 font-medium">{pkgMissing.length > 0 ? (<>Still needed for {pkgMaterial}: <span className="font-bold text-blue-700">{pkgMissing.map((k) => PKG_FIELD_LABELS[k]).join(', ')}</span></>) : 'Enter a length, quantity and total weight to see the packing plan.'}</p>
-                  )}
-                  {pkgMaterial === 'Tube' && (
-                    <p className="text-[11px] text-amber-600 font-medium">Tube weight is estimated as a solid round — the sheet's weight formula has no hollow-tube case, so wall thickness is not used.</p>
+                    <p className="text-xs text-slate-500 font-medium">{pkgMissing.length > 0 ? (<>Still needed for {pkgMaterial}: <span className="font-bold text-blue-700">{pkgMissing.map((k) => PKG_FIELD_LABELS[k]).join(', ')}</span></>) : 'Enter the required boxes to see the packing plan.'}</p>
                   )}
                   <p className="text-[11px] text-slate-400">Weight is calculated at 0.0345 lb/in&#179; (UHMW), the same factor as the sheet, from length, cross-section and quantity. Rules match the sheet: over 400 lbs goes in a crate (1,960 lbs of material max, 140 lbs tare per crate), 60&quot; or under goes in a box (60 lbs max), otherwise a poly bag (150 lbs max). Crate dimensions are fixed at 125&quot; x 29&quot; x 33&quot;.</p>
                 </div>
