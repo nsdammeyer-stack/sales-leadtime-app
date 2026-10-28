@@ -88,11 +88,9 @@
       // Tab 3: OOR View Filter States
       const [oorSearchQuery, setOorSearchQuery] = useState('');
       const [oorSelectedDie, setOorSelectedDie] = useState('ALL');
-      // Date search for Open Orders: a date picker (exact day) plus the
-      // text search also matching dates. oorDateField picks which date
-      // the picker filters on; the text search matches both dates.
+      // Promise-date search for Open Orders: a date picker (exact day)
+      // plus the text search also matching promise dates.
       const [oorDateFilter, setOorDateFilter] = useState('');
-      const [oorDateField, setOorDateField] = useState('promise');
       // Order card modal: set to an order from openOrdersList when its
       // SO number is clicked, anywhere order numbers appear.
       const [selectedOrder, setSelectedOrder] = useState(null);
@@ -394,7 +392,6 @@
               pickings: String(r.row[31] || '').trim(),
               fulfillment: fulfillment || '',
               orderDate: formatRawDate(orderDate),
-              orderDateRaw: orderDate,
               promiseDate: formatRawDate(promiseDate),
               promiseDateRaw: promiseDate,
               csr,
@@ -498,8 +495,7 @@
           // Exact-day date picker. Dates are compared as local YYYY-MM-DD
           // (not UTC ISO) so a date never shifts by timezone.
           if (oorDateFilter) {
-            const raw = oorDateField === 'order' ? ord.orderDateRaw : ord.promiseDateRaw;
-            const dt = parseSafeDate(String(raw || ''));
+            const dt = parseSafeDate(String(ord.promiseDateRaw || ''));
             const ymd = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
             if (ymd !== oorDateFilter) return false;
           }
@@ -512,11 +508,9 @@
             ord.itemPart.toLowerCase().includes(q) ||
             ord.profileDie.toLowerCase().includes(q) ||
             (ord.po || '').toLowerCase().includes(q) ||
-            // Date search by text: formatted ("Nov 2, 2026") or raw
-            // ("11/2/2026", "2026-11-02") order and promise dates.
-            ord.orderDate.toLowerCase().includes(q) ||
+            // Promise-date search by text: formatted ("Nov 2, 2026") or
+            // raw ("11/2/2026", "2026-11-02") promise date.
             ord.promiseDate.toLowerCase().includes(q) ||
-            String(ord.orderDateRaw || '').toLowerCase().includes(q) ||
             String(ord.promiseDateRaw || '').toLowerCase().includes(q)
           );
         }).sort((a, b) => {
@@ -527,7 +521,7 @@
           if (db) return 1;
           return 0;
         });
-      }, [openOrdersList, oorSelectedDie, oorSearchQuery, oorDateFilter, oorDateField]);
+      }, [openOrdersList, oorSelectedDie, oorSearchQuery, oorDateFilter]);
 
       // Orders calling for the inventory item in the OOR modal: same
       // family code (die + color), or an exact part-number match.
@@ -1563,20 +1557,11 @@
                         className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium"
                       />
                     </div>
-                    <select
-                      value={oorDateField}
-                      onChange={e => setOorDateField(e.target.value)}
-                      title="Which date the date picker filters on"
-                      className="px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-medium text-slate-700"
-                    >
-                      <option value="promise">Promise date</option>
-                      <option value="order">Order date</option>
-                    </select>
                     <input
                       type="date"
                       value={oorDateFilter}
                       onChange={e => setOorDateFilter(e.target.value)}
-                      title="Show only orders with this date"
+                      title="Show only orders promised on this date"
                       className="px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl font-medium text-slate-700"
                     />
                     {oorDateFilter && (
