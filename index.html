@@ -28,7 +28,7 @@
       Search, Clock, Calendar, CheckCircle2, AlertTriangle, AlertCircle,
       Package, Truck, Layers, Wrench, Plus, Edit2, Trash2,
       FileText, Sparkles, X, Info, ShieldCheck, MapPin, Flame,
-      Bookmark, Gauge, Zap, Activity, ExternalLink, RefreshCw, ChevronRight
+      Bookmark, Gauge, Zap, Activity, ExternalLink, RefreshCw, ChevronRight, Square
     } from 'lucide-react';
 
     // =========================================================================
@@ -288,6 +288,11 @@
       const [inspFilter, setInspFilter] = useState('all');
       const [dailySearchQuery, setDailySearchQuery] = useState('');
       const [dailyDateFilter, setDailyDateFilter] = useState('');
+      // Full Sheet calculator tab states: finished-sheet picker (Sales
+      // 2.0 FS- rows, EACH) plus the quantity being quoted.
+      const [fsSearchQuery, setFsSearchQuery] = useState('');
+      const [selectedFsId, setSelectedFsId] = useState(null);
+      const [fsQty, setFsQty] = useState(10);
       // Packaging estimator inputs (same columns as the Packaging Tool
       // sheet: material type, dimensions, qty, total weight).
       const [pkgMaterial, setPkgMaterial] = useState('Flat Bar');
@@ -464,6 +469,12 @@
       const masterPartRange = data?.find(d => d.name === 'Master Part 2.0') || data?.[2];
       const ratesRange = data?.find(d => d.name === 'RatesByProfile') || data?.[3];
       const inspRange = data?.find(d => d.name === 'Inspection Sheet') || data?.[4];
+      // Billet Inventory arrives through the same feed: Master Inventory
+      // pulls it from the Skiving Record workbook by IMPORTRANGE, so no
+      // second endpoint is needed. Missing range = the import or the
+      // sheetNames entry is not live yet; the Full Sheet tab degrades
+      // to a process-only estimate and says so.
+      const billetRange = data?.find(d => d.name === 'Billet Inventory');
 
       // Master Part 2.0 lookup, keyed by New Part Number (column I).
       // Sales 2.0 has no description column: its column G is "Date of Last
@@ -479,6 +490,10 @@
               description: String(r.row[10] || '').trim(),
               weightFt: parseFloat(r.row[5]) || null,
               cavities: parseInt(r.row[17], 10) || null,
+              // Master Part 2.0 col N: Profile Die Used. For FS rows
+              // this is the billet family (ES-100/150/200 = 1"/1.5"/2"
+              // billets); for profiles it is the extrusion die.
+              die: String(r.row[13] || '').trim().toUpperCase(),
               // Master Part 2.0: C Color, D Formulation (e.g. NATURAL,
               // VIRGIN -> "Virgin NATURAL" on the order card).
               color: String(r.row[2] || '').trim(),
@@ -1028,6 +1043,167 @@
         };
       }, [selectedItem, inquiredQty, quoteAsOfDate, isRushOrder, liveInspectionInfo, selectedDieRate, dieQueueOrders]);
 
+      // =============== FULL SHEET CALCULATOR ===============
+      // Finished sheet stock comes from Sales 2.0 (FS- rows, EACH).
+      // Billet stock comes from the Billet Inventory feed range.
+      // Process rule (Nathan 2026-10-28): when sheets must come out
+      // of billets, allow 14 days for skive -> 2 days curtain room ->
+      // square at the panel saw -> plane. Extrusion days for a billet
+      // shortfall sit on top of the 14 days; finished-stock cover
+      // stays 1-2 business days. The 14 days is a fixed pipeline
+      // allowance, not scaled by quantity.
+      const FS_BILLET_YIELD = { '1': { 10: 200, 8: 160 }, '1.5': { 10: 300, 8: 240 }, '2': { 10: 400, 8: 320 } };
+      // Die lbs/day defaults from the 2026 Weekly projection's daily
+      // usage by billet thickness (Virgin Usage rows).
+      const FS_DIE_LBS_PER_DAY = { '1': 1836, '1.5': 1558, '2': 1833 };
+      const FS_PROCESS_DAYS = 14;
+      // Billet sizes arrive as e.g. 1"x10' RBK, 1.5"x10' OFVGY, or the
+      // odd 1'x10' VRD (single quote for inches). Normalize all of
+      // them to "thickness x lengthFt COLOR" so sheet-side keys match.
+      const normalizeBilletType = (sizeStr) => {
+        if (!sizeStr || typeof sizeStr !== 'string') return null;
+        const cleaned = sizeStr.replace(/["']/g, '').trim().toUpperCase();
+        const m = cleaned.match(/^([\d.]+)\s*X\s*(\d+)\s+(.+)$/);
+        if (!m) return null;
+        return { thickness: m[1], lengthFt: m[2], color: m[3].trim(), key: `${m[1]}x${m[2]} ${m[3].trim()}` };
+      };
+      // Billet stock by normalized type. The "Total Billets by Type"
+      // rollup (cols G:H) wins where present; detail sums (col C size,
+      // col E qty) cover any type the rollup missed. Blank import rows
+      // are skipped, so a half-loaded IMPORTRANGE cannot poison the map.
+      const billetByType = useMemo(() => {
+        const detail = {};
+        const rollup = {};
+        if (!billetRange?.data) return {};
+        billetRange.data.forEach(r => {
+          if (!r.row) return;
+          const size = normalizeBilletType(String(r.row[2] || ''));
+          const qty = parseFloat(r.row[4]);
+          if (size && !isNaN(qty)) detail[size.key] = (detail[size.key] || 0) + qty;
+          const roll = normalizeBilletType(String(r.row[6] || ''));
+          const total = parseFloat(r.row[7]);
+          if (roll && !isNaN(total)) rollup[roll.key] = total;
+        });
+        return { ...detail, ...rollup };
+      }, [billetRange]);
+      const billetFeedMissing = !billetRange?.data;
+      // FS part numbers look like FS-012RBK042-120: thickness code,
+      // color letters, 3-digit pigment, dash, length inches (S/CT
+      // suffixes are variants of the same sheet). The thickness code
+      // is only needed for queue matching, so no inches conversion.
+      const FS_PART_RE = /^FS-(\d{3})([A-Z]+)\d{3}-(\d+)/i;
+      const fsList = useMemo(() => {
+        return inventoryList.filter(i => i.partNumber.toUpperCase().startsWith('FS-')).map(i => {
+          const master = masterPartByPart[i.partNumber.toUpperCase()] || {};
+          const m = i.partNumber.match(FS_PART_RE);
+          const thicknessCode = m ? m[1] : '';
+          const colorCode = m ? m[2].toUpperCase() : '';
+          const lengthIn = m ? parseInt(m[3], 10) : (i.length || 120);
+          const lengthFt = lengthIn >= 110 ? 10 : 8;
+          const dieRaw = (master.die || '').toUpperCase();
+          const billetThickness = dieRaw === 'ES-100' ? '1' : dieRaw === 'ES-150' ? '1.5' : dieRaw === 'ES-200' ? '2' : null;
+          return {
+            ...i,
+            thicknessCode, colorCode, lengthIn, lengthFt,
+            dieFamily: dieRaw || '—',
+            billetThickness,
+            billetKey: billetThickness ? `${billetThickness}x${lengthFt} ${colorCode}` : null,
+            // Master Part col F for FS rows is lbs per SHEET (25 for a
+            // 10-foot 1/8" sheet, 20 for the 8-foot), not lbs/ft.
+            weightEach: master.weightFt != null ? master.weightFt : null,
+          };
+        });
+      }, [inventoryList, masterPartByPart]);
+      const selectedFs = useMemo(() => fsList.find(i => i.id === selectedFsId) || null, [fsList, selectedFsId]);
+      // OOR length encodings vary: -10 / -8 suffixes, or an X
+      // dimension (FS-100VBL659-48.000X120.000PT, where 48 is the width
+      // and 120 is the length). Prefer the X dimension; fall back to
+      // the trailing suffix; null when it cannot be read, in which
+      // case thickness + color alone decide the match.
+      const fsOorLengthFt = (code) => {
+        const x = String(code || '').match(/X\s*(\d+)(?:\.0+)?/i);
+        if (x) { const v = parseInt(x[1], 10); return v >= 110 ? 10 : 8; }
+        const tail = String(code || '').match(/-(\d+)\s*[A-Z]*$/i);
+        if (tail) {
+          const v = parseInt(tail[1], 10);
+          if (v === 10 || v === 8) return v;
+          if (v >= 110) return 10;
+          if (v === 96) return 8;
+        }
+        return null;
+      };
+      // FS queue: OOR lines for the same thickness + color (+ length
+      // when readable), ahead of this order like the profile die queue.
+      const fsQueueOrders = useMemo(() => {
+        if (!selectedFs) return [];
+        return openOrdersList.filter(o => {
+          if (!o.itemPart || !o.itemPart.toUpperCase().startsWith('FS-')) return false;
+          const m = o.itemPart.match(/^FS-(\d{3})([A-Z]+)/i);
+          if (!m) return false;
+          if (m[1] !== selectedFs.thicknessCode || m[2].toUpperCase() !== selectedFs.colorCode) return false;
+          const lenFt = fsOorLengthFt(o.itemPart);
+          if (lenFt != null && lenFt !== selectedFs.lengthFt) return false;
+          return true;
+        });
+      }, [selectedFs, openOrdersList]);
+      const fsCalc = useMemo(() => {
+        if (!selectedFs) return null;
+        const available = selectedFs.qtyAvailable || 0;
+        const requested = Number(fsQty) || 1;
+        const asOf = parseSafeDate(quoteAsOfDate);
+        const queueLines = fsQueueOrders.filter(o => o.uom === 'EACH');
+        const queueQty = queueLines.reduce((s, o) => s + (o.qty || 0), 0);
+        const queueCovered = Math.min(available, queueQty);
+        const queueShortfall = queueQty - queueCovered;
+        const remainingForOrder = available - queueCovered;
+        const shortfall = Math.max(0, requested - remainingForOrder);
+        const sheetsToMake = shortfall + queueShortfall;
+        const needsProduction = sheetsToMake > 0;
+        const coveragePct = requested > 0 ? Math.min(100, Math.round((available / requested) * 100)) : 0;
+        const weightEach = selectedFs.weightEach;
+        const billetYield = selectedFs.billetThickness ? (FS_BILLET_YIELD[selectedFs.billetThickness] || {})[selectedFs.lengthFt] : null;
+        const billetsNeeded = (weightEach != null && billetYield && sheetsToMake > 0)
+          ? Math.ceil((sheetsToMake * weightEach) / billetYield * 1.12)
+          : 0;
+        const billetStockKnown = !!selectedFs.billetKey && Object.prototype.hasOwnProperty.call(billetByType, selectedFs.billetKey);
+        const billetStock = billetStockKnown ? billetByType[selectedFs.billetKey] : null;
+        const billetShortfall = (billetsNeeded > 0 && billetStock != null) ? Math.max(0, billetsNeeded - billetStock) : null;
+        const dieLbsPerDay = selectedFs.billetThickness ? FS_DIE_LBS_PER_DAY[selectedFs.billetThickness] : null;
+        const billetsPerDay = (dieLbsPerDay && billetYield) ? dieLbsPerDay / billetYield : null;
+        const extrusionDays = (billetShortfall != null && billetsPerDay) ? Math.ceil(billetShortfall / billetsPerDay) : 0;
+        // When billet stock, the die family, or the sheet weight is
+        // unknown, extrusion time is unknown too: the estimate below
+        // is process-only and the panel says so.
+        const extrusionUnknown = needsProduction && (billetsNeeded === 0 && sheetsToMake > 0 && (weightEach == null || !billetYield) || billetStock == null);
+        const processDays = needsProduction ? FS_PROCESS_DAYS : 0;
+        const totalCalendarDays = extrusionDays + processDays;
+        let readyDate = null, readyLabel = null;
+        if (!needsProduction) {
+          readyDate = addBusinessDays(asOf, 2);
+          readyLabel = '1–2 business days';
+        } else if (extrusionUnknown) {
+          readyDate = addContinuousExtrusionWithFreightPickup(asOf, processDays).dispatchDate;
+          readyLabel = `At least ${processDays} days (process only — billet coverage unknown)`;
+        } else {
+          readyDate = addContinuousExtrusionWithFreightPickup(asOf, totalCalendarDays).dispatchDate;
+          readyLabel = `${totalCalendarDays} calendar days`;
+        }
+        return {
+          available, requested, needsProduction, coveragePct,
+          queueQty, queueLines, queueCovered, queueShortfall,
+          remainingForOrder, shortfall, sheetsToMake,
+          weightEach, billetYield, billetsNeeded,
+          billetStock, billetStockKnown, billetShortfall,
+          dieLbsPerDay, billetsPerDay, extrusionDays, extrusionUnknown,
+          processDays, totalCalendarDays, readyDate, readyLabel,
+        };
+      }, [selectedFs, fsQty, quoteAsOfDate, fsQueueOrders, billetByType]);
+      // Billet stock table rows, sorted by thickness, length, color.
+      const billetStockRows = useMemo(() => Object.keys(billetByType).map(k => {
+        const p = normalizeBilletType(k);
+        return { key: k, qty: billetByType[k], thickness: p ? parseFloat(p.thickness) : 99, lengthFt: p ? parseInt(p.lengthFt, 10) : 99, color: p ? p.color : k };
+      }).sort((a, b) => a.thickness - b.thickness || a.lengthFt - b.lengthFt || a.color.localeCompare(b.color)), [billetByType]);
+
       // Filtered inventory rows for Tab 2
       const filteredInventory = useMemo(() => {
         return inventoryList.filter(item => {
@@ -1185,6 +1361,17 @@
               >
                 <Sparkles className="w-4 h-4" />
                 Lead Time Calculator
+              </button>
+              <button
+                onClick={() => setActiveTab('fullsheet')}
+                className={`py-3 flex items-center gap-2 border-b-2 transition whitespace-nowrap ${
+                  activeTab === 'fullsheet'
+                    ? 'border-blue-600 text-blue-600 font-bold'
+                    : 'border-transparent hover:text-slate-700'
+                }`}
+              >
+                <Square className="w-4 h-4" />
+                Full Sheet Calculator
               </button>
               <button
                 onClick={() => setActiveTab('inventory')}
@@ -2327,6 +2514,222 @@
                         ))}
                       </tbody>
                     </table>
+                  </div>
+                </div>
+              </div>
+            ) : activeTab === 'fullsheet' ? (
+              <div className="space-y-6">
+                {billetFeedMissing && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-xs font-medium text-amber-800 flex gap-2 items-start">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>Billet Inventory feed not found — the app is not receiving the Billet Inventory range. Check the IMPORTRANGE tab in Master Inventory and that 'Billet Inventory' is in the leadtime script's sheet list (redeployed as a new version). Finished-stock math below still works; billet coverage is unknown until the feed arrives.</span>
+                  </div>
+                )}
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                  {/* Left Column: Select Sheet & Quantity */}
+                  <div className="lg:col-span-5 space-y-6">
+                    <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-5">
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                          <Search className="w-4 h-4 text-blue-600" />
+                          <h2 className="text-sm font-bold text-slate-900">Select Full Sheet</h2>
+                        </div>
+                        <span className="text-xs text-slate-400 font-medium">Stock from Sales 2.0</span>
+                      </div>
+                      <div className="relative mb-3">
+                        <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
+                        <input
+                          type="text"
+                          value={fsSearchQuery}
+                          onChange={e => setFsSearchQuery(e.target.value)}
+                          placeholder="Search part (e.g. FS-012RBK-10) or description..."
+                          className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium"
+                        />
+                        {fsSearchQuery && (
+                          <div className="absolute left-0 right-0 top-11 bg-white border border-slate-200 shadow-xl rounded-xl max-h-56 overflow-y-auto divide-y z-30">
+                            {fsList
+                              .filter(i =>
+                                i.partNumber.toLowerCase().includes(fsSearchQuery.toLowerCase()) ||
+                                i.description.toLowerCase().includes(fsSearchQuery.toLowerCase())
+                              )
+                              .slice(0, 10)
+                              .map(item => (
+                                <div
+                                  key={item.id}
+                                  onClick={() => { setSelectedFsId(item.id); setFsSearchQuery(''); }}
+                                  className="p-2.5 text-xs cursor-pointer hover:bg-blue-50/80 flex items-center justify-between transition"
+                                >
+                                  <div>
+                                    <div className="font-bold text-slate-900">{item.partNumber}</div>
+                                    <div className="text-[11px] text-slate-400">{item.description}</div>
+                                  </div>
+                                  <div className="text-right">
+                                    <div className="font-bold text-emerald-700">{item.qtyAvailable.toLocaleString()} EACH</div>
+                                    <div className="text-[10px] text-slate-400">Die: {item.dieFamily}</div>
+                                  </div>
+                                </div>
+                              ))}
+                          </div>
+                        )}
+                      </div>
+                      {selectedFs && (
+                        <div className="p-4 bg-slate-50/80 rounded-xl border border-slate-200 space-y-3.5">
+                          <div className="flex items-start justify-between">
+                            <div>
+                              <span className="text-[10px] uppercase font-bold text-blue-600 tracking-wider block">Active Inquiry Item</span>
+                              <h3 className="text-sm font-extrabold text-slate-900 mt-0.5">{selectedFs.partNumber}</h3>
+                              <p className="text-xs text-slate-500 font-medium mt-0.5">{selectedFs.description}</p>
+                            </div>
+                            <button onClick={() => setSelectedFsId(null)} className="text-slate-400 hover:text-rose-600 transition">
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                          <div className="grid grid-cols-3 gap-2 text-center">
+                            <div className="bg-white rounded-lg border border-slate-200 p-2"><span className="text-[10px] uppercase font-bold text-slate-400 block">On Hand</span><span className="text-sm font-extrabold text-slate-900">{selectedFs.qtyAvailable.toLocaleString()} EACH</span></div>
+                            <div className="bg-white rounded-lg border border-slate-200 p-2"><span className="text-[10px] uppercase font-bold text-slate-400 block">Billet Family</span><span className="text-sm font-extrabold text-slate-900">{selectedFs.dieFamily}</span></div>
+                            <div className="bg-white rounded-lg border border-slate-200 p-2"><span className="text-[10px] uppercase font-bold text-slate-400 block">Sheet Weight</span><span className="text-sm font-extrabold text-slate-900">{selectedFs.weightEach != null ? `${selectedFs.weightEach} lbs` : '—'}</span></div>
+                          </div>
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <label className="text-[10px] uppercase font-bold text-slate-500 block mb-1">Quantity (EACH)</label>
+                              <input
+                                type="number"
+                                min="1"
+                                value={fsQty}
+                                onChange={e => setFsQty(e.target.value)}
+                                className="w-full px-3 py-2 text-xs bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[10px] uppercase font-bold text-slate-500 block mb-1">Quote As Of</label>
+                              <input
+                                type="date"
+                                value={quoteAsOfDate}
+                                onChange={e => setQuoteAsOfDate(e.target.value)}
+                                className="w-full px-3 py-2 text-xs bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    {/* Billet stock reference table */}
+                    <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-5">
+                      <div className="flex items-center justify-between mb-3">
+                        <h3 className="text-sm font-bold text-slate-900">Billet Inventory by Type</h3>
+                        <span className="text-xs text-slate-400 font-medium">From Skiving Record via Master Inventory</span>
+                      </div>
+                      {billetStockRows.length === 0 ? (
+                        <p className="text-xs text-slate-500 font-medium">No billet totals in the feed. Check the IMPORTRANGE tab and the sheetNames entry.</p>
+                      ) : (
+                        <div className="overflow-x-auto border border-slate-200 rounded-xl max-h-72 overflow-y-auto">
+                          <table className="w-full text-left text-xs border-collapse">
+                            <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-600 uppercase text-[10px] tracking-wider font-bold sticky top-0">
+                              <tr><th className="py-2.5 px-3">Billet Type</th><th className="py-2.5 px-3 text-right">On Hand</th></tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                              {billetStockRows.map(row => (
+                                <tr key={row.key} className={selectedFs && selectedFs.billetKey === row.key ? 'bg-blue-50/70 font-bold text-slate-900' : 'hover:bg-blue-50/40 transition'}>
+                                  <td className="py-2 px-3">{row.key}{selectedFs && selectedFs.billetKey === row.key ? ' ← this sheet' : ''}</td>
+                                  <td className="py-2 px-3 text-right font-mono">{row.qty.toLocaleString()}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                      {lastUpdated && (
+                        <p className="text-[11px] text-slate-400 mt-2">Feed last updated {lastUpdated.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} • Auto-refresh every 30 min</p>
+                      )}
+                    </div>
+                  </div>
+                  {/* Right Column: Lead Time Result */}
+                  <div className="lg:col-span-7 space-y-6">
+                    {!selectedFs ? (
+                      <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center">
+                        <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-3">
+                          <Square className="w-6 h-6" />
+                        </div>
+                        <h3 className="text-base font-bold text-slate-900">Full Sheet Lead Time</h3>
+                        <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">Search for a full sheet on the left (FS- part number). Finished stock comes from Sales 2.0; billet stock comes from the Billet Inventory feed. If the sheet must come out of billets, the quote allows 14 days for skive, 2 days in the curtain room, squaring at the panel saw, and planing.</p>
+                      </div>
+                    ) : (
+                      <div className={`rounded-2xl border shadow-xs overflow-hidden ${!fsCalc.needsProduction ? 'bg-emerald-600 border-emerald-600' : 'bg-amber-400 border-amber-400'}`}>
+                        <div className="p-5">
+                          <div className="flex items-center gap-2">
+                            <CheckCircle2 className={!fsCalc.needsProduction ? "w-4 h-4 text-white" : "w-4 h-4 text-slate-900"} />
+                            <span className={`text-sm font-extrabold ${!fsCalc.needsProduction ? 'text-white' : 'text-slate-900'}`}>
+                              {!fsCalc.needsProduction ? 'Whole Delivery: 100% In Stock' : 'Production Required — From Billets'}
+                            </span>
+                          </div>
+                          <div className={`text-xs font-medium mt-1 ${!fsCalc.needsProduction ? 'text-emerald-100' : 'text-amber-800'}`}>
+                            {selectedFs.partNumber} • {selectedFs.description}
+                          </div>
+                          <div className="mt-4 flex items-end justify-between">
+                            <div>
+                              <span className={`text-[10px] uppercase font-bold block ${!fsCalc.needsProduction ? 'text-emerald-200' : 'text-amber-800'}`}>Estimated Ready</span>
+                              <span className={`text-xl font-extrabold ${!fsCalc.needsProduction ? 'text-white' : 'text-slate-900'}`}>{formatSafeDate(fsCalc.readyDate)}</span>
+                              <span className={`text-xs font-medium block ${!fsCalc.needsProduction ? 'text-emerald-100' : 'text-amber-800'}`}>{fsCalc.readyLabel}</span>
+                            </div>
+                            <div className="text-right">
+                              <span className={`text-[10px] uppercase font-bold block ${!fsCalc.needsProduction ? 'text-emerald-200' : 'text-amber-800'}`}>Requested</span>
+                              <span className={`text-xl font-extrabold ${!fsCalc.needsProduction ? 'text-white' : 'text-slate-900'}`}>{fsCalc.requested.toLocaleString()} EACH</span>
+                            </div>
+                          </div>
+                          <div className="mt-3">
+                            <div className="flex justify-between text-[11px] font-bold mb-1">
+                              <span className={!fsCalc.needsProduction ? 'text-emerald-100' : 'text-amber-800'}>Stock coverage: {fsCalc.coveragePct}%</span>
+                              <span className={!fsCalc.needsProduction ? 'text-emerald-100' : 'text-amber-800'}>{fsCalc.available.toLocaleString()} / {fsCalc.requested.toLocaleString()} EACH</span>
+                            </div>
+                            <div className="bg-black/10 rounded-full h-3 overflow-hidden">
+                              <div className={`h-3 rounded-full transition-all duration-500 ${!fsCalc.needsProduction ? 'bg-emerald-300' : 'bg-amber-600'}`} style={{ width: `${fsCalc.coveragePct}%` }} />
+                            </div>
+                          </div>
+                        </div>
+                        <div className="bg-white p-5 space-y-4">
+                          <div className="grid grid-cols-2 gap-3 text-xs">
+                            <div className="bg-slate-50 rounded-xl border border-slate-200 p-3"><span className="text-[10px] uppercase font-bold text-slate-500 block">Finished On Hand</span><span className="text-sm font-extrabold text-slate-900">{fsCalc.available.toLocaleString()} EACH</span></div>
+                            <div className="bg-slate-50 rounded-xl border border-slate-200 p-3"><span className="text-[10px] uppercase font-bold text-slate-500 block">Sales 2.0 Qty On Order</span><span className="text-sm font-extrabold text-slate-900">{selectedFs.qtyOnOrder.toLocaleString()} EACH</span></div>
+                            <div className="bg-slate-50 rounded-xl border border-slate-200 p-3"><span className="text-[10px] uppercase font-bold text-slate-500 block">Open FS Orders Ahead (OOR)</span><span className="text-sm font-extrabold text-slate-900">{fsCalc.queueQty.toLocaleString()} EACH ({fsCalc.queueLines.length} lines)</span></div>
+                            <div className="bg-slate-50 rounded-xl border border-slate-200 p-3"><span className="text-[10px] uppercase font-bold text-slate-500 block">Remaining For This Order</span><span className="text-sm font-extrabold text-slate-900">{fsCalc.remainingForOrder.toLocaleString()} EACH</span></div>
+                            <div className="bg-slate-50 rounded-xl border border-slate-200 p-3"><span className="text-[10px] uppercase font-bold text-slate-500 block">Shortfall / Sheets To Make</span><span className="text-sm font-extrabold text-slate-900">{fsCalc.shortfall.toLocaleString()} / {fsCalc.sheetsToMake.toLocaleString()} EACH</span></div>
+                            <div className="bg-slate-50 rounded-xl border border-slate-200 p-3"><span className="text-[10px] uppercase font-bold text-slate-500 block">Billet Type / Stock</span><span className="text-sm font-extrabold text-slate-900">{selectedFs.billetKey || `Unknown (die ${selectedFs.dieFamily})`} / {fsCalc.billetStock != null ? `${fsCalc.billetStock.toLocaleString()} billets` : 'not listed'}</span></div>
+                            <div className="bg-slate-50 rounded-xl border border-slate-200 p-3"><span className="text-[10px] uppercase font-bold text-slate-500 block">Billets Needed (× 1.12 factor)</span><span className="text-sm font-extrabold text-slate-900">{fsCalc.billetsNeeded > 0 ? `${fsCalc.billetsNeeded.toLocaleString()} billets` : (fsCalc.needsProduction ? '— cannot compute' : '0')}</span></div>
+                            <div className="bg-slate-50 rounded-xl border border-slate-200 p-3"><span className="text-[10px] uppercase font-bold text-slate-500 block">Extrusion Time</span><span className="text-sm font-extrabold text-slate-900">{fsCalc.extrusionUnknown ? 'Unknown — billet coverage missing' : (fsCalc.billetShortfall > 0 ? `${fsCalc.extrusionDays} days (${fsCalc.billetShortfall.toLocaleString()} billets ÷ ${fsCalc.billetsPerDay.toFixed(1)}/day at ${fsCalc.dieLbsPerDay.toLocaleString()} lbs/day)` : 'None — billet stock covers it')}</span></div>
+                          </div>
+                          {fsCalc.needsProduction && (
+                            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs font-medium text-amber-800 flex gap-2 items-start">
+                              <Info className="w-4 h-4 shrink-0 mt-0.5" />
+                              <span>Process allowance: {fsCalc.processDays} days — skive, then 2 days in the curtain room, then square at the panel saw, then plane. {fsCalc.billetsNeeded > 0 && fsCalc.weightEach != null && fsCalc.billetYield ? `Billets = ${fsCalc.sheetsToMake.toLocaleString()} sheets × ${fsCalc.weightEach} lbs ÷ ${fsCalc.billetYield} lbs/billet × 1.12.` : ''} Ready date runs on calendar days (7-day production) and rolls to Monday when freight pickup would land on a weekend.</span>
+                            </div>
+                          )}
+                          <p className="text-[11px] text-slate-400">Note: Sales 2.0 Qty On Order and the OOR line total can differ — the OOR total is the queue used here, the same way the profile calculator treats them.</p>
+                          {fsCalc.queueLines.length > 0 && (
+                            <div>
+                              <h4 className="text-xs font-bold text-slate-900 mb-2">Open FS Orders Ahead Of This Quote</h4>
+                              <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                                <table className="w-full text-left text-xs border-collapse">
+                                  <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-600 uppercase text-[10px] tracking-wider font-bold">
+                                    <tr><th className="py-2.5 px-3">SO #</th><th className="py-2.5 px-3">Customer</th><th className="py-2.5 px-3">Item</th><th className="py-2.5 px-3 text-right">Qty</th><th className="py-2.5 px-3">Promise</th></tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                                    {fsCalc.queueLines.map(o => (
+                                      <tr key={o.id} className="hover:bg-blue-50/40 transition">
+                                        <td className="py-2 px-3"><button onClick={() => setSelectedOrder(o)} className="text-blue-600 hover:underline font-bold">{o.soNum}</button></td>
+                                        <td className="py-2 px-3">{o.customer}</td>
+                                        <td className="py-2 px-3">{o.itemPart}</td>
+                                        <td className="py-2 px-3 text-right font-mono">{o.qty.toLocaleString()} {o.uom}</td>
+                                        <td className="py-2 px-3">{o.promiseDate}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
