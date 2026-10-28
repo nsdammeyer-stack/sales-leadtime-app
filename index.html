@@ -426,7 +426,15 @@
         }).filter(Boolean);
       }, [ratesRange]);
 
-      // Parse Inspection Sheet
+      // Parse Inspection Sheet. Columns: C Line #, E Part #, F Die #,
+      // K Resin, L Color, O Measured In/Hr, P Target Rate In/Hr.
+      // In-line definition (Nathan, 2026-10-28): a line counts as in-line
+      // when it has a resin AND a numeric target rate. The old definition
+      // required measured In/Hr > 0, but that column is 0 or blank for
+      // all 136 rows in the sheet right now, so it counted 0 of 68 lines
+      // as in-line even though 46 lines have resin + target rate. This
+      // definition also drives liveInspectionInfo below, so a die counted
+      // as in-line skips the 10-day setup in lead-time calculations.
       const inspectionLinesList = useMemo(() => {
         if (!inspRange?.data) return [];
         return inspRange.data.filter(r => r.index_ >= 3 && r.row && (r.row[5] || r.row[4] || r.row[2])).map(r => {
@@ -436,8 +444,9 @@
           const resin = r.row[10] != null ? String(r.row[10]).trim() : '';
           const color = r.row[11] != null ? String(r.row[11]).trim() : '';
           const inHr = parseFloat(r.row[14]) || 0;
+          const targetRate = parseFloat(r.row[15]) || 0;
           const hasResin = Boolean(resin && !['#N/A', 'N/A', '—', '-'].includes(resin.toUpperCase()));
-          const hasSpeed = inHr > 0;
+          const hasSpeed = targetRate > 0;
           return {
             lineNum,
             partNum,
@@ -445,6 +454,9 @@
             resin,
             color,
             inHr,
+            targetRate,
+            // Display speed: measured rate when present, else target rate.
+            effectiveInHr: inHr > 0 ? inHr : targetRate,
             isActive: hasResin && hasSpeed
           };
         });
@@ -985,7 +997,7 @@
                           </div>
                           <div className="text-[11px] bg-white p-2 rounded-lg border border-slate-200 text-slate-600">
                             {calc?.isLive ? (
-                              <span>Mounted on <strong>Line #{liveInspectionInfo.lineNum}</strong> running <strong>{liveInspectionInfo.color}</strong> at {liveInspectionInfo.inHr} in/hr.</span>
+                              <span>Mounted on <strong>Line #{liveInspectionInfo.lineNum}</strong> running <strong>{liveInspectionInfo.color}</strong> at {liveInspectionInfo.effectiveInHr} in/hr.</span>
                             ) : (
                               <span>Profile die is not in line (Offline: 2-week / 10 business days setup & <strong className="text-amber-800">10 Bus. Days Setup</strong> heat).</span>
                             )}
@@ -1276,7 +1288,7 @@
                           </div>
                           <p className="text-[11px] text-slate-500 leading-relaxed">
                             {calc.isLive
-                              ? `Profile die (${selectedItem?.inferredDie}) is actively running on Line #${liveInspectionInfo.lineNum}. Setup delay is waived, extrusion feeds directly into staging.`
+                              ? `Profile die (${selectedItem?.inferredDie}) is in line on Line #${liveInspectionInfo.lineNum}. Setup delay is waived, extrusion feeds directly into staging.`
                               : `Profile die (${selectedItem?.inferredDie}) is not currently running on the line in the plant Inspection Sheet. Offline tooling strictly requires a baseline 10 business days (two full weeks) setup and heat staging window just to get the die in line, with 24/7 continuous extrusion run time and packaging QA added on top.`}
                           </p>
                         </div>
