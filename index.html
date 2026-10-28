@@ -226,26 +226,45 @@
         });
       }, [salesRange, masterPartByPart]);
 
-      // Parse Open Orders (OOR)
+      // Parse Open Orders (OOR).
+      // Actual OOR columns (header row, sheet row 2):
+      //   B Promise Date, D Order No, E Order Date, F CSR, G PO,
+      //   L Customer Name, M Item Code, O UOM, P Quantity Ordered,
+      //   R Profile Die Used, S Profile #, T New PN,
+      //   Y Shipped, Z/AA Packaged, AB Bag, AC/AD MCM.
+      // The old code read the wrong columns throughout: SO # came from
+      // column A (a quantity), customer from the promise date, and qty
+      // from column D (the order number) -- which is why the die badges
+      // summed order numbers into the millions. Header, subheader and
+      // title rows are skipped by requiring a numeric Order No and an
+      // Item Code, rather than trusting a row index.
       const openOrdersList = useMemo(() => {
         if (!oorRange?.data) return [];
+        const parseQty = (v) => {
+          if (v == null) return 0;
+          const n = parseFloat(String(v).replace(/,/g, ''));
+          return isNaN(n) ? 0 : n;
+        };
         return oorRange.data
-          .filter(r => r.index_ > 0 && r.row && (r.row[0] || r.row[3]))
+          .filter(r => r.row && /^\d+$/.test(String(r.row[3] || '').trim()) && r.row[12])
           .map((r, idx) => {
-            // Flexible index fallback depending on sheet structure
-            const soNum = String(r.row[0] || r.row[3] || `SO-${idx + 1000}`).trim();
-            const customer = String(r.row[1] || r.row[15] || 'Customer').trim();
-            const itemPart = String(r.row[2] || r.row[9] || '').trim();
-            const qty = parseFloat(r.row[3] || r.row[14]) || 0;
-            const uom = String(r.row[4] || r.row[13] || 'FEET').trim().toUpperCase();
-            const profileDie = extractBaseDie(itemPart) || String(r.row[5] || 'Standard').trim();
-            const orderDate = r.row[6] || r.row[7] || '2026-09-15';
-            const promiseDate = r.row[7] || r.row[8] || '2026-10-15';
-            const csr = String(r.row[8] || r.row[16] || 'BBB').trim().slice(0, 3).toUpperCase();
-            const statusRaw = String(r.row[9] || r.row[17] || 'Scheduled').trim();
+            const soNum = String(r.row[3]).trim();
+            const customer = String(r.row[11] || 'Customer').trim();
+            const itemPart = String(r.row[12] || r.row[19] || '').trim();
+            const qty = parseQty(r.row[15]);
+            const uom = String(r.row[14] || 'FEET').trim().toUpperCase();
+            const profileDie = String(r.row[17] || r.row[18] || '').trim().toUpperCase()
+              || extractBaseDie(itemPart) || 'Standard';
+            const orderDate = r.row[4] || '2026-09-15';
+            const promiseDate = r.row[1] || '2026-10-15';
+            const csr = String(r.row[5] || 'BBB').trim().slice(0, 3).toUpperCase();
+            const po = String(r.row[6] || '').trim();
+            const statusRaw = [r.row[24], r.row[25], r.row[26], r.row[27], r.row[28], r.row[29]]
+              .filter(Boolean).join(' ');
 
             let status = 'Scheduled';
-            if (/packaged/i.test(statusRaw)) status = 'Packaged';
+            if (/shipped/i.test(statusRaw)) status = 'Shipped';
+            else if (/packaged/i.test(statusRaw)) status = 'Packaged';
             else if (/boxed/i.test(statusRaw)) status = 'Boxed';
             else if (/hold/i.test(statusRaw)) status = 'On Hold';
 
@@ -259,7 +278,9 @@
               profileDie,
               orderDate: formatRawDate(orderDate),
               promiseDate: formatRawDate(promiseDate),
+              promiseDateRaw: promiseDate,
               csr,
+              po,
               status
             };
           });
@@ -343,8 +364,13 @@
         return list;
       }, [openOrdersList]);
 
-      // Filtered OOR Rows
+      // Filtered OOR Rows, sorted by promise date, earliest first, so the
+      // table is in a stable, useful order instead of sheet order.
       const filteredOorOrders = useMemo(() => {
+        const parsePromise = (d) => {
+          const dt = parseSafeDate(String(d || ''));
+          return isNaN(dt.getTime()) ? null : dt;
+        };
         return openOrdersList.filter(ord => {
           const matchDie = oorSelectedDie === 'ALL' || ord.profileDie === oorSelectedDie;
           if (!matchDie) return false;
@@ -355,8 +381,16 @@
             ord.soNum.toLowerCase().includes(q) ||
             ord.customer.toLowerCase().includes(q) ||
             ord.itemPart.toLowerCase().includes(q) ||
-            ord.profileDie.toLowerCase().includes(q)
+            ord.profileDie.toLowerCase().includes(q) ||
+            (ord.po || '').toLowerCase().includes(q)
           );
+        }).sort((a, b) => {
+          const da = parsePromise(a.promiseDateRaw);
+          const db = parsePromise(b.promiseDateRaw);
+          if (da && db) return da - db;
+          if (da) return -1;
+          if (db) return 1;
+          return 0;
         });
       }, [openOrdersList, oorSelectedDie, oorSearchQuery]);
 
@@ -1283,33 +1317,6 @@
                   </div>
                 </div>
 
-                {/* Profile Die Carousel Cards */}
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
-                  {oorDieSummaries.slice(0, 6).map((summary, idx) => {
-                    const isSelected = oorSelectedDie === summary.die;
-                    return (
-                      <div
-                        key={idx}
-                        onClick={() => setOorSelectedDie(isSelected ? 'ALL' : summary.die)}
-                        className={`p-3 rounded-xl border cursor-pointer transition flex flex-col justify-between ${
-                          isSelected
-                            ? 'bg-blue-50 border-blue-400 shadow-xs'
-                            : 'bg-white border-slate-200/90 hover:bg-slate-50 hover:border-slate-300'
-                        }`}
-                      >
-                        <div>
-                          <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Profile Die</span>
-                          <span className="font-extrabold text-slate-900 text-sm truncate block mt-0.5">{summary.die}</span>
-                        </div>
-                        <div className="flex items-center justify-between text-xs mt-3 pt-2 border-t border-slate-100">
-                          <span className="font-bold text-blue-600">{summary.orders} Orders</span>
-                          <span className="text-slate-500 font-medium">{summary.totalQty.toLocaleString()}</span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-
                 {/* OOR Data Table */}
                 <div className="overflow-x-auto border border-slate-200 rounded-xl">
                   <table className="w-full text-left text-xs border-collapse">
@@ -1345,7 +1352,7 @@
                           <td className="py-2.5 px-3 text-center text-slate-500 text-[10px] font-bold">{row.csr}</td>
                           <td className="py-2.5 px-3 text-center">
                             <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                              row.status === 'Packaged'
+                              row.status === 'Packaged' || row.status === 'Shipped'
                                 ? 'bg-emerald-100 text-emerald-800'
                                 : row.status === 'Boxed'
                                 ? 'bg-blue-100 text-blue-800'
@@ -1364,7 +1371,7 @@
                   <span>
                     Showing {Math.min(50, filteredOorOrders.length)} of {filteredOorOrders.length} records
                   </span>
-                  <span>Click on any profile die card to filter orders</span>
+                  <span>Use the Profile Die dropdown above to filter orders</span>
                 </div>
               </div>
             ) : (
