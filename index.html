@@ -88,6 +88,9 @@
       // Tab 3: OOR View Filter States
       const [oorSearchQuery, setOorSearchQuery] = useState('');
       const [oorSelectedDie, setOorSelectedDie] = useState('ALL');
+      // Order card modal: set to an order from openOrdersList when its
+      // SO number is clicked, anywhere order numbers appear.
+      const [selectedOrder, setSelectedOrder] = useState(null);
       // Note: the OOR table used to hard-cap at 50 rows, and because rows
       // are sorted by promise date earliest first, the 50th row happened
       // to promise 2026-10-23 -- so the tab looked like it stopped at
@@ -245,6 +248,10 @@
               description: String(r.row[10] || '').trim(),
               weightFt: parseFloat(r.row[5]) || null,
               cavities: parseInt(r.row[17], 10) || null,
+              // Master Part 2.0: C Color, D Formulation (e.g. NATURAL,
+              // VIRGIN -> "Virgin NATURAL" on the order card).
+              color: String(r.row[2] || '').trim(),
+              formulation: String(r.row[3] || '').trim(),
             };
           }
         });
@@ -320,14 +327,43 @@
             else if (/boxed/i.test(statusRaw)) status = 'Boxed';
             else if (/hold/i.test(statusRaw)) status = 'On Hold';
 
+            // Full detail for the order card. OOR columns: G PO, H Ship
+            // Via, I Ship To (multiline), K Customer #, N Description,
+            // T New PN, U lbs/in, V FG Length, X Total Weight, C Tracking,
+            // Q Lot, AF Pickings. Color/resin comes from Master Part 2.0
+            // (formulation + color) looked up by New PN, then item code.
+            const master = masterPartByPart[String(r.row[19] || '').trim().toUpperCase()]
+              || masterPartByPart[itemPart.toUpperCase()] || {};
+            const formulation = master.formulation
+              ? master.formulation.charAt(0).toUpperCase() + master.formulation.slice(1).toLowerCase()
+              : '';
+            const colorResin = [formulation, master.color].filter(Boolean).join(' ') || '—';
+            const lbsIn = parseFloat(r.row[20]) || null;
+            const fgLength = parseFloat(r.row[21]) || null;
+            const fulfillment = [r.row[24], r.row[25], r.row[26], r.row[27], r.row[28], r.row[29]]
+              .filter(Boolean).join(' • ');
             return {
               id: `${r.index_}-${soNum}-${idx}`,
               soNum,
               customer,
+              account: String(r.row[10] || '').trim(),
+              shipVia: String(r.row[7] || '').trim(),
+              shipTo: String(r.row[8] || '').trim(),
+              description: String(r.row[13] || '').trim(),
+              newPartNum: String(r.row[19] || '').trim(),
               itemPart: itemPart || profileDie,
               qty,
               uom,
               profileDie,
+              colorResin,
+              lbsIn,
+              fgLength,
+              unitWeight: (lbsIn && fgLength) ? lbsIn * fgLength : null,
+              totalWeight: parseFloat(r.row[23]) || null,
+              tracking: String(r.row[2] || '').trim(),
+              lot: String(r.row[16] || '').trim(),
+              pickings: String(r.row[31] || '').trim(),
+              fulfillment: fulfillment || '',
               orderDate: formatRawDate(orderDate),
               promiseDate: formatRawDate(promiseDate),
               promiseDateRaw: promiseDate,
@@ -336,7 +372,7 @@
               status
             };
           });
-      }, [oorRange]);
+      }, [oorRange, masterPartByPart]);
 
       // Parse Rates By Profile.
       // Actual columns: A Profile name, B Profile #, C Lowest Rate (in/hr),
@@ -1326,7 +1362,7 @@
                             <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
                               {dieQueueOrders.map((ord, idx) => (
                                 <tr key={idx} className="hover:bg-slate-50">
-                                  <td className="py-2.5 font-bold text-blue-600">{ord.soNum}</td>
+                                  <td className="py-2.5 font-bold text-blue-600"><button onClick={() => setSelectedOrder(ord)} className="hover:underline">{ord.soNum}</button></td>
                                   <td className="py-2.5">{ord.customer}</td>
                                   <td className="py-2.5">
                                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200">
@@ -1508,7 +1544,7 @@
                     <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
                       {filteredOorOrders.map((row) => (
                         <tr key={row.id} className="hover:bg-blue-50/40 transition">
-                          <td className="py-2.5 px-3 font-bold text-blue-600">{row.soNum}</td>
+                          <td className="py-2.5 px-3 font-bold text-blue-600"><button onClick={() => setSelectedOrder(row)} className="hover:underline">{row.soNum}</button></td>
                           <td className="py-2.5 px-3 font-medium text-slate-900">{row.customer}</td>
                           <td className="py-2.5 px-3 text-slate-600 font-medium">{row.itemPart}</td>
                           <td className="py-2.5 px-3 text-right font-extrabold text-slate-900">{row.qty.toLocaleString()}</td>
@@ -1563,6 +1599,100 @@
                 </button>
               </div>
             )}
+          {/* Order Card Modal: opened by clicking any SO number. */}
+          {selectedOrder && (() => {
+            const stockItem = inventoryList.find(i =>
+              i.partNumber.toUpperCase() === selectedOrder.newPartNum.toUpperCase()
+              || i.partNumber.toUpperCase() === selectedOrder.itemPart.toUpperCase());
+            const loadIntoCalculator = () => {
+              if (!stockItem) return;
+              setSelectedPartId(stockItem.id);
+              // Lead Time qty is in feet. FEET orders load as-is; EACH
+              // orders convert via finished cut length (pieces x in / 12).
+              if (selectedOrder.uom === 'FEET') {
+                setInquiredQty(Math.round(selectedOrder.qty));
+              } else if (selectedOrder.fgLength) {
+                setInquiredQty(Math.round(selectedOrder.qty * selectedOrder.fgLength / 12));
+              }
+              setSelectedOrder(null);
+              setActiveTab('leadtime');
+            };
+            return (
+              <div
+                className="fixed inset-0 bg-black/50 flex items-start justify-center p-4 pt-10 z-50 overflow-y-auto"
+                onClick={() => setSelectedOrder(null)}
+              >
+                <div
+                  className="bg-white rounded-2xl shadow-xl max-w-2xl w-full p-6 space-y-5"
+                  onClick={e => e.stopPropagation()}
+                >
+                  <div className="flex items-start justify-between border-b border-slate-200 pb-4">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800">SALES ORDER</span>
+                        <h2 className="text-lg font-extrabold text-slate-900">SO #{selectedOrder.soNum}</h2>
+                      </div>
+                      <p className="text-xs text-slate-500 font-medium mt-1">
+                        Customer PO: {selectedOrder.po || '—'} • CSR: {selectedOrder.csr}
+                      </p>
+                    </div>
+                    <button onClick={() => setSelectedOrder(null)} className="text-slate-400 hover:text-slate-700 text-xl leading-none px-1">×</button>
+                  </div>
+
+                  <div className="bg-slate-50 rounded-xl border border-slate-200 p-4 space-y-3">
+                    <h3 className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">Customer & Delivery Information</h3>
+                    <div className="grid grid-cols-2 gap-3 text-xs">
+                      <div><span className="text-slate-500 block">Customer Name</span><span className="font-bold text-slate-900">{selectedOrder.customer}</span>{selectedOrder.account && <span className="block text-slate-500">Acct #{selectedOrder.account}</span>}</div>
+                      <div><span className="text-slate-500 block">Ship Via / Method</span><span className="font-bold text-slate-900">{selectedOrder.shipVia || '—'}</span></div>
+                    </div>
+                    <div className="text-xs"><span className="text-slate-500 block">Ship To Address</span><span className="font-medium text-slate-900 whitespace-pre-line">{selectedOrder.shipTo || '—'}</span></div>
+                  </div>
+
+                  <div className="bg-slate-50 rounded-xl border border-slate-200 p-4 space-y-3">
+                    <h3 className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">Part & Tooling Profile Specifications</h3>
+                    <div className="text-xs"><span className="text-slate-500 block">Part Code / Item</span><span className="font-bold text-slate-900">{selectedOrder.newPartNum || selectedOrder.itemPart}</span><span className="block text-slate-500">{selectedOrder.description}</span></div>
+                    <div className="grid grid-cols-3 gap-3 text-xs">
+                      <div><span className="text-slate-500 block">Profile Die</span><span className="font-bold text-slate-900">{selectedOrder.profileDie}</span></div>
+                      <div><span className="text-slate-500 block">Color / Resin</span><span className="font-bold text-slate-900">{selectedOrder.colorResin}</span></div>
+                      <div><span className="text-slate-500 block">Finished Cut Length</span><span className="font-bold text-slate-900">{selectedOrder.fgLength ? `${selectedOrder.fgLength}"` : '—'}</span></div>
+                      <div><span className="text-slate-500 block">Linear Weight (lbs/in)</span><span className="font-bold text-slate-900">{selectedOrder.lbsIn != null ? selectedOrder.lbsIn.toFixed(4) : '—'}</span></div>
+                      <div><span className="text-slate-500 block">Est. Unit Weight</span><span className="font-bold text-slate-900">{selectedOrder.unitWeight != null ? `${selectedOrder.unitWeight.toFixed(2)} lbs` : '—'}</span></div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="bg-slate-50 rounded-xl border border-slate-200 p-4 space-y-2 text-xs">
+                      <h3 className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">Quantity & Delivery Schedule</h3>
+                      <div><span className="text-slate-500 block">Quantity Ordered</span><span className="font-bold text-slate-900">{selectedOrder.qty.toLocaleString()} {selectedOrder.uom}</span></div>
+                      <div><span className="text-slate-500 block">Order Placed Date</span><span className="font-bold text-slate-900">{selectedOrder.orderDate}</span></div>
+                      <div><span className="text-slate-500 block">Promised Ship Date</span><span className="font-bold text-slate-900">{selectedOrder.promiseDate}</span></div>
+                      {selectedOrder.tracking && <div><span className="text-slate-500 block">Tracking Number</span><span className="font-bold text-slate-900">{selectedOrder.tracking}</span></div>}
+                      {selectedOrder.lot && <div><span className="text-slate-500 block">Lot #</span><span className="font-bold text-slate-900">{selectedOrder.lot}</span></div>}
+                      {selectedOrder.totalWeight != null && <div><span className="text-slate-500 block">Total Weight</span><span className="font-bold text-slate-900">{selectedOrder.totalWeight.toLocaleString()} lbs</span></div>}
+                    </div>
+                    <div className="bg-slate-50 rounded-xl border border-slate-200 p-4 space-y-2 text-xs">
+                      <h3 className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">Packaging & Fulfillment Status</h3>
+                      <div><span className="text-slate-500 block">Packaging Status</span><span className="font-bold text-slate-900">{selectedOrder.status === 'Scheduled' ? 'Scheduled in Queue' : selectedOrder.status}</span></div>
+                      <div><span className="text-slate-500 block">Pickings Archive</span><span className="font-bold text-slate-900">{selectedOrder.pickings || '—'}</span></div>
+                      <div><span className="text-slate-500 block">Fulfillment Details</span><span className="font-bold text-slate-900">{selectedOrder.fulfillment || 'No fulfillment recorded yet'}</span></div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-1">
+                    <button
+                      onClick={loadIntoCalculator}
+                      disabled={!stockItem}
+                      title={stockItem ? 'Load this part and quantity into the Lead Time Calculator' : 'This part was not found in the inventory stock list'}
+                      className="px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-semibold hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Load into Lead Time Calculator
+                    </button>
+                    <button onClick={() => setSelectedOrder(null)} className="px-4 py-2 bg-slate-900 text-white rounded-lg text-xs font-semibold hover:bg-slate-700 transition">Close</button>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
           </main>
         </div>
       );
