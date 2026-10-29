@@ -65,6 +65,17 @@
       0.625: 16, 0.75: 13, 1: 10, 1.25: 8, 1.5: 7, 1.75: 6, 1.875: 5, 2: 5
     };
 
+    // Full Sheet skid table lookup: nearest table value within 0.01",
+    // so 0.1875 matches the 0.188 row. Returns {key, max} or null.
+    // The key matters for combined skids: two entries that match the
+    // same table row share one count cap on a skid.
+    function fsTableEntry(thickness) {
+      for (var k in FS_SKID_MAX) {
+        if (Math.abs(parseFloat(k) - thickness) <= 0.01) return { key: k, max: FS_SKID_MAX[k] };
+      }
+      return null;
+    }
+
     // Full Sheet skid plan: sheets per skid is the smallest of the
     // table quantity for the thickness (nearest table value within
     // 0.01", so 0.1875 matches the 0.188 row) and the 12" material
@@ -75,10 +86,8 @@
     function estimateSkid(length, width, thickness, qty, totalWeight) {
       if (!qty || qty <= 0 || !thickness || thickness <= 0) return null;
       var sheetWeight = qty > 0 ? totalWeight / qty : 0;
-      var tableMax = null;
-      for (var k in FS_SKID_MAX) {
-        if (Math.abs(parseFloat(k) - thickness) <= 0.01) { tableMax = FS_SKID_MAX[k]; break; }
-      }
+      var tableEntry = fsTableEntry(thickness);
+      var tableMax = tableEntry ? tableEntry.max : null;
       var heightCap = Math.floor(12 / thickness);
       var perSkid = Math.max(1, Math.min(tableMax != null ? tableMax : Infinity, heightCap));
       var is10 = length > 96;
@@ -98,6 +107,47 @@
       }
       var packing = numSkids + ' Skid' + (numSkids > 1 ? 's' : '') + ' total.\n' + lines.join('\n');
       return { packing: packing, dims: dims.join('\n'), perSkid: perSkid, numSkids: numSkids, tare: tare };
+    }
+
+    // Combined skid plan for Full Sheet lines that share a footprint
+    // (same length and width): sheets fill each skid greedily in line
+    // order while the skid stays within 12" of material and no
+    // thickness exceeds its table quantity on that skid. A lone line
+    // packs exactly as estimateSkid does, so single-line behavior is
+    // unchanged. Weight is shown per skid, not used as a splitter —
+    // the ~2000 lb guideline stays approximate, as in estimateSkid.
+    function estimateCombinedSkids(length, width, items) {
+      var is10 = length > 96;
+      var tare = is10 ? 100 : 85;
+      var size = is10 ? '4x10' : '4x8';
+      var skids = [];
+      var cur = null;
+      function newSkid() { cur = { parts: [], height: 0, weight: 0, counts: {} }; skids.push(cur); }
+      newSkid();
+      items.forEach(function (item) {
+        var remaining = item.qty;
+        while (remaining > 0) {
+          var tableEntry = fsTableEntry(item.thickness);
+          var countKey = tableEntry ? tableEntry.key : String(item.thickness);
+          var countOnSkid = cur.counts[countKey] || 0;
+          var roomByHeight = Math.floor((12 - cur.height) / item.thickness + 1e-9);
+          var roomByTable = tableEntry ? (tableEntry.max - countOnSkid) : Infinity;
+          var take = Math.min(remaining, roomByHeight, roomByTable);
+          if (take <= 0) {
+            if (cur.parts.length === 0) { take = 1; }
+            else { newSkid(); continue; }
+          }
+          cur.parts.push({ idx: item.idx, thickness: item.thickness, qty: take });
+          cur.height += take * item.thickness;
+          cur.weight += take * item.sheetWeight;
+          cur.counts[countKey] = countOnSkid + take;
+          remaining -= take;
+        }
+      });
+      var result = skids.filter(function (s) { return s.parts.length > 0; }).map(function (s) {
+        return { parts: s.parts, height: s.height, weight: s.weight, dims: length.toFixed(2) + '" x ' + width.toFixed(2) + '" x ' + (4 + s.height).toFixed(2) + '"' };
+      });
+      return { size: size, tare: tare, skids: result };
     }
 
     function estimatePacking(materialType, length, width, height, thickness, diameter, leg1, leg2, qty, totalWeight) {
@@ -876,16 +926,18 @@
         return { packing, suggested, dims, containerType, weight };
       }, [pkgMaterial, pkgLength, pkgWidth, pkgHeight, pkgThickness, pkgDiameter, pkgWall, pkgLeg1, pkgLeg2, pkgQty]);
 
-      // Order Builder: each row packs separately with the same
-      // functions as the single-item estimator (separate-and-totaled
-      // for now; combining lines into shared containers is a later
-      // step). Container counts for Crate/Box/Bag come from the first
-      // line of the packing text ("N Crates total.") rather than a
-      // second copy of the container-count math; skids report their
-      // count directly. Shipped weight adds tare per container
-      // (crate 140, skid 100/85); boxes and bags have no tare. Rows
-      // with missing boxes or an invalid tube wall are left out of
-      // the totals until they are filled in.
+      // Order Builder: each row packs with the same functions as the
+      // single-item estimator, except Full Sheet lines of the same
+      // footprint (length and width) share skids through
+      // estimateCombinedSkids; other container types still pack per
+      // line (combining lines into shared crates, boxes, or bags is a
+      // later step). Container counts for Crate/Box/Bag come from the
+      // first line of the packing text ("N Crates total.") rather
+      // than a second copy of the container-count math. Shipped
+      // weight adds tare per container (crate 140, skid 100/85);
+      // boxes and bags have no tare. Rows with missing boxes or an
+      // invalid tube wall are left out of the totals until they are
+      // filled in.
       const builderResults = useMemo(() => {
         const num = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
         const lines = builderRows.map((row, idx) => {
@@ -902,9 +954,7 @@
           const weight = estimatePkgWeight(row.material, length, num(row.width), num(row.height), num(row.thickness), num(row.diameter), num(row.leg1), num(row.leg2), qty, num(row.wall));
           if (!qty || qty <= 0 || !weight || weight <= 0 || !length || length <= 0) return { row, idx, missing, wallInvalid, result: null };
           if (row.material === 'Full Sheet') {
-            const skid = estimateSkid(length, num(row.width), num(row.thickness), qty, weight);
-            if (!skid) return { row, idx, missing, wallInvalid, result: null };
-            return { row, idx, missing, wallInvalid, result: { packing: skid.packing, suggested: 'N/A', dims: skid.dims, containerType: 'Skid', weight, shipped: weight + skid.tare * skid.numSkids, counts: { Skid: skid.numSkids } } };
+            return { row, idx, missing, wallInvalid, result: null, fsInfo: { length, width: num(row.width), thickness: num(row.thickness), qty, sheetWeight: qty > 0 ? weight / qty : 0, weight } };
           }
           const packing = estimatePacking(row.material, length, num(row.width), num(row.height), num(row.thickness), num(row.diameter), num(row.leg1), num(row.leg2), qty, weight);
           if (!packing) return { row, idx, missing, wallInvalid, result: null };
@@ -917,17 +967,54 @@
           const shipped = containerType === 'Crate' ? weight + 140 * count : weight;
           return { row, idx, missing, wallInvalid, result: { packing, suggested, dims, containerType, weight, shipped, counts: { [typeKey]: count } } };
         });
+        // Full Sheet lines of the same footprint share skids: group
+        // them, pack each group greedily, then fill in each row's
+        // packing and dims from the skids its sheets land on.
+        const fsGroups = {};
+        const fsOrder = [];
+        lines.forEach((l) => {
+          if (!l.fsInfo) return;
+          const key = l.fsInfo.length + 'x' + l.fsInfo.width;
+          if (!fsGroups[key]) { fsGroups[key] = { length: l.fsInfo.length, width: l.fsInfo.width, items: [] }; fsOrder.push(key); }
+          fsGroups[key].items.push({ idx: l.idx, thickness: l.fsInfo.thickness, qty: l.fsInfo.qty, sheetWeight: l.fsInfo.sheetWeight });
+        });
+        const skidPlan = [];
+        let skidNum = 0;
+        fsOrder.forEach((key) => {
+          const g = fsGroups[key];
+          const plan = estimateCombinedSkids(g.length, g.width, g.items);
+          plan.skids.forEach((s) => {
+            skidNum += 1;
+            skidPlan.push({ number: skidNum, size: plan.size, tare: plan.tare, length: g.length, width: g.width, parts: s.parts, height: s.height, weight: s.weight, dims: s.dims, totalHeight: 4 + s.height });
+          });
+        });
+        lines.forEach((l) => {
+          if (!l.fsInfo) return;
+          const mine = skidPlan.filter((s) => s.parts.some((p) => p.idx === l.idx));
+          const packing = mine.map((s) => {
+            const part = s.parts.find((p) => p.idx === l.idx);
+            const others = s.parts.filter((p) => p.idx !== l.idx).map((p) => 'Line ' + (p.idx + 1));
+            const shared = others.length > 0 ? ' (shared with ' + others.join(', ') + ')' : '';
+            return 'Skid ' + s.number + ': ' + part.qty + (part.qty === 1 ? ' sheet ' : ' sheets ') + part.thickness + '"' + shared;
+          }).join('\n');
+          const dims = mine.map((s) => 'Skid ' + s.number + ': ' + s.dims).join('\n');
+          l.result = { packing, suggested: 'N/A', dims, containerType: 'Skid', weight: l.fsInfo.weight };
+        });
         const complete = lines.filter((l) => l.result);
         const totals = { material: 0, shipped: 0, crates: 0, boxes: 0, bags: 0, skids: 0 };
         complete.forEach((l) => {
           totals.material += l.result.weight;
+          if (l.fsInfo) return;
           totals.shipped += l.result.shipped;
           totals.crates += l.result.counts.Crate || 0;
           totals.boxes += l.result.counts.Box || 0;
           totals.bags += l.result.counts.Bag || 0;
-          totals.skids += l.result.counts.Skid || 0;
         });
-        return { lines, completeCount: complete.length, totals };
+        skidPlan.forEach((s) => {
+          totals.shipped += s.weight + s.tare;
+          totals.skids += 1;
+        });
+        return { lines, completeCount: complete.length, totals, skidPlan };
       }, [builderRows]);
       const updateBuilderRow = (id, key, value) => {
         setBuilderRows((rows) => rows.map((r) => (r.id === id ? { ...r, [key]: value } : r)));
@@ -2604,7 +2691,7 @@
                 <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-5">
                   <div>
                     <h3 className="text-sm font-extrabold text-slate-900">Order Builder</h3>
-                    <p className="text-xs text-slate-500 mt-1">Build an order line by line — each line packs with the same rules as the Packaging estimator, and the shipment totals add them up. Start with one line and add more as needed, up to 20. A line with missing boxes is left out of the totals until it is filled in.</p>
+                    <p className="text-xs text-slate-500 mt-1">Build an order line by line — each line packs with the same rules as the Packaging estimator, and the shipment totals add them up. Full Sheet lines of the same size share skids when they fit. Start with one line and add more as needed, up to 20. A line with missing boxes is left out of the totals until it is filled in.</p>
                   </div>
                   <div className="bg-slate-50 rounded-xl border border-slate-200 p-4">
                     <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500 block">Shipment Totals ({builderResults.completeCount} of {builderRows.length} {builderRows.length === 1 ? 'line' : 'lines'} complete)</span>
@@ -2686,6 +2773,17 @@
                       </div>
                     );
                   })}
+                  {builderResults.skidPlan && builderResults.skidPlan.length > 0 && (
+                    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-3">
+                      <h3 className="text-sm font-extrabold text-slate-900">Skid Plan</h3>
+                      <p className="text-xs text-slate-500">Full Sheet lines of the same size share skids when they fit within 12" of material and each thickness's table quantity.</p>
+                      {builderResults.skidPlan.map((s) => (
+                        <p key={s.number} className="text-xs font-semibold text-slate-800">
+                          Skid {s.number} ({s.size}): {s.parts.map((p) => 'Line ' + (p.idx + 1) + ' — ' + p.qty + (p.qty === 1 ? ' sheet' : ' sheets') + ' × ' + p.thickness + '"').join('; ')} — {s.height.toFixed(2)}" material, {s.totalHeight.toFixed(2)}" total height, {(s.weight + s.tare).toFixed(1)} lbs shipped ({s.weight.toFixed(1)} lbs material){s.weight > 2000 ? ' — material over the ~2000 lb guideline' : ''}
+                        </p>
+                      ))}
+                    </div>
+                  )}
                   {builderRows.length < 20 ? (
                     <button onClick={addBuilderRow} className="px-4 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl">+ Add line item</button>
                   ) : (
