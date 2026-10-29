@@ -1032,7 +1032,6 @@
       // shortfall sit on top of the 14 days; finished-stock cover
       // stays 1-2 business days. The 14 days is a fixed pipeline
       // allowance, not scaled by quantity.
-      const FS_BILLET_YIELD = { '1': { 10: 200, 8: 160 }, '1.5': { 10: 300, 8: 240 }, '2': { 10: 400, 8: 320 } };
       const FS_PROCESS_DAYS = 14;
       // Extrusion rates come from RatesByProfile (Nathan, 2026-10-28),
       // replacing the old Weekly-projection lbs/day defaults AND the
@@ -1195,10 +1194,21 @@
         const sheetsToMake = shortfall + queueShortfall;
         const needsProduction = sheetsToMake > 0;
         const coveragePct = requested > 0 ? Math.min(100, Math.round((remainingForOrder / requested) * 100)) : 0;
-        const weightEach = selectedFs.weightEach;
-        const billetYield = selectedFs.billetThickness ? (FS_BILLET_YIELD[selectedFs.billetThickness] || {})[selectedFs.lengthFt] : null;
-        const billetsNeeded = (weightEach != null && billetYield && sheetsToMake > 0)
-          ? Math.ceil((sheetsToMake * weightEach) / billetYield)
+        // Sheets per billet (Nathan 2026-10-29): floor(billet
+        // thickness / sheet thickness). A 1" billet gives one 0.75"
+        // sheet, two 0.5" sheets, two 0.375" sheets, four 0.25"
+        // sheets, eight 0.125" sheets. The old weight-based math
+        // (sheets x lbs / billet lbs) wrongly split one billet
+        // across sheets by weight. Thickness comes from the 3-digit
+        // code in the part number (075 = 0.75"); the +1e-9 guards
+        // against float error landing just under a whole number.
+        const sheetThicknessIn = parseInt(selectedFs.thicknessCode, 10) / 100;
+        const billetThicknessNum = selectedFs.billetThickness ? parseFloat(selectedFs.billetThickness) : null;
+        const sheetsPerBillet = (sheetThicknessIn > 0 && billetThicknessNum)
+          ? Math.max(0, Math.floor(billetThicknessNum / sheetThicknessIn + 1e-9))
+          : 0;
+        const billetsNeeded = (sheetsPerBillet > 0 && sheetsToMake > 0)
+          ? Math.ceil(sheetsToMake / sheetsPerBillet)
           : 0;
         const billetStockKnown = !!selectedFs.billetKey && Object.prototype.hasOwnProperty.call(billetByType, selectedFs.billetKey);
         const billetStock = billetStockKnown ? billetByType[selectedFs.billetKey] : null;
@@ -1210,10 +1220,10 @@
         const billetLengthIn = selectedFs.lengthFt * 12;
         const billetsPerDay = (fsInHr && billetLengthIn) ? (fsInHr * 24) / billetLengthIn : null;
         const extrusionDays = (billetShortfall != null && billetsPerDay) ? Math.ceil(billetShortfall / billetsPerDay) : 0;
-        // When billet stock, the die family, the sheet weight, or the
-        // family rate is unknown, extrusion time is unknown too: the
-        // estimate below is process-only and the panel says so.
-        const extrusionUnknown = needsProduction && (billetsNeeded === 0 && sheetsToMake > 0 && (weightEach == null || !billetYield) || billetStock == null || fsInHr == null);
+        // When billet stock, the die family, or the family rate is
+        // unknown, extrusion time is unknown too: the estimate below
+        // is process-only and the panel says so.
+        const extrusionUnknown = needsProduction && ((billetsNeeded === 0 && sheetsToMake > 0 && sheetsPerBillet === 0) || billetStock == null || fsInHr == null);
         const processDays = needsProduction ? FS_PROCESS_DAYS : 0;
         // Line status: is this sheet's billet family + color running
         // on any full-sheet line right now? Turnover applies only
@@ -1244,7 +1254,7 @@
           available, requested, needsProduction, coveragePct,
           queueQty, queueLines, queueCovered, queueShortfall,
           remainingForOrder, shortfall, sheetsToMake,
-          weightEach, billetYield, billetsNeeded,
+          sheetsPerBillet, billetsNeeded,
           billetStock, billetStockKnown, billetShortfall,
           fsInHr, billetsPerDay, extrusionDays, extrusionUnknown,
           processDays, totalCalendarDays, readyDate, readyLabel,
@@ -2664,7 +2674,7 @@
                           {fsCalc.needsProduction && (
                             <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs font-medium text-amber-800 flex gap-2 items-start">
                               <Info className="w-4 h-4 shrink-0 mt-0.5" />
-                              <span>Process allowance: {fsCalc.processDays} days — skive, then 2 days in the curtain room, then square at the panel saw, then plane. {fsCalc.billetsNeeded > 0 && fsCalc.weightEach != null && fsCalc.billetYield ? `Billets = ${fsCalc.sheetsToMake.toLocaleString()} sheets × ${fsCalc.weightEach} lbs ÷ ${fsCalc.billetYield} lbs/billet.` : ''} {fsCalc.turnoverDays > 0 ? `Plus ${fsCalc.turnoverDays} days die turnover: this billet family + color is not currently running on any full-sheet line (per the Inspection Sheet), so the current orders run first, then the die is changed over and heated to this color before extrusion.` : ''} Ready date runs on calendar days (7-day production) and rolls to Monday when freight pickup would land on a weekend.</span>
+                              <span>Process allowance: {fsCalc.processDays} days — skive, then 2 days in the curtain room, then square at the panel saw, then plane. {fsCalc.billetsNeeded > 0 && fsCalc.sheetsPerBillet > 0 ? `Billets = ${fsCalc.sheetsToMake.toLocaleString()} sheets ÷ ${fsCalc.sheetsPerBillet} sheet${fsCalc.sheetsPerBillet === 1 ? '' : 's'} per billet.` : ''} {fsCalc.turnoverDays > 0 ? `Plus ${fsCalc.turnoverDays} days die turnover: this billet family + color is not currently running on any full-sheet line (per the Inspection Sheet), so the current orders run first, then the die is changed over and heated to this color before extrusion.` : ''} Ready date runs on calendar days (7-day production) and rolls to Monday when freight pickup would land on a weekend.</span>
                             </div>
                           )}
                           <p className="text-[11px] text-slate-400">Note: Sales 2.0 Qty On Order and the OOR line total can differ — the OOR total is the queue used here, the same way the profile calculator treats them.</p>
