@@ -28,7 +28,7 @@
       Search, Clock, Calendar, CheckCircle2, AlertTriangle, AlertCircle,
       Package, Truck, Layers, Wrench, Plus, Edit2, Trash2,
       FileText, Sparkles, X, Info, ShieldCheck, MapPin, Flame,
-      Bookmark, Gauge, Zap, Activity, ExternalLink, RefreshCw, ChevronRight, Square
+      Gauge, Zap, Activity, ExternalLink, RefreshCw, ChevronRight, Square
     } from 'lucide-react';
 
     // =========================================================================
@@ -1650,16 +1650,8 @@
                       />
                     </div>
 
-                    {/* Save Inquiry / Reset Actions */}
+                    {/* Reset Action */}
                     <div className="flex items-center gap-3 pt-2">
-                      <button
-                        type="button"
-                        onClick={() => alert("Inquiry snapshot saved to session!")}
-                        className="flex-1 py-2.5 px-4 bg-slate-900 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 hover:bg-slate-800 transition"
-                      >
-                        <Bookmark className="w-3.5 h-3.5" />
-                        Save Inquiry to Log
-                      </button>
                       <button
                         type="button"
                         onClick={() => { setInquiredQty(''); setCustomerName(''); setInternalNotes(''); setIsRushOrder(false); }}
