@@ -2703,6 +2703,16 @@
                       <span className="text-sm font-extrabold text-slate-900">{builderResults.totals.bags} {builderResults.totals.bags === 1 ? 'Bag' : 'Bags'}</span>
                       <span className="text-sm font-extrabold text-slate-900">{builderResults.totals.skids} {builderResults.totals.skids === 1 ? 'Skid' : 'Skids'}</span>
                     </div>
+                    {builderResults.skidPlan && builderResults.skidPlan.length > 0 && (
+                      <div className="mt-3 space-y-1">
+                        <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500 block">Skids</span>
+                        {builderResults.skidPlan.map((s) => (
+                          <p key={s.number} className="text-xs font-semibold text-slate-800">
+                            Skid {s.number} ({s.size}, {s.parts.map((p) => 'Line ' + (p.idx + 1)).join(', ')}): {s.dims} — {(s.weight + s.tare).toFixed(1)} lbs shipped
+                          </p>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   {builderRows.map((row, rIdx) => {
                     const required = PKG_REQUIRED_FIELDS[row.material] || [];
