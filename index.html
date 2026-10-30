@@ -266,46 +266,116 @@
     // Combined crates for crate-type lines: the crate is fixed at
     // 125" x 29" x 33" with a 25" x 23.5" cross-section, and each
     // crate holds at most 1,960 lbs of material (2,100 gross minus
-    // the 140 lb tare). Pieces are dealt heaviest first to the
-    // lightest crate they fit in (weight and cross-section), so
-    // crates carry about the same weight, like mixed bags. A piece
-    // that fits in no open crate opens a new one, and an unused
-    // empty crate is dropped then; a piece that fits neither cap on
-    // its own still gets its own crate, and the plan flags it.
-    // Layout reuses the bag rectangles in rows no wider than 25",
-    // with bundle height at or under 23.5". That matches the
-    // single-line grid for rod and flat bar, but it does not
-    // capture how angles and channels nest, so mixed-crate layouts
-    // for those profiles are estimates and can use an extra crate
-    // versus the sheet's nesting math. Crate dimensions are fixed,
-    // so every crate reports 125" x 29" x 33".
+    // the 140 lb tare). Lines pack in the order given and stay
+    // whole whenever they fit whole on a crate: weight under the
+    // cap and the bundle fitting the cross-section, tried
+    // lightest crate first, with a fresh crate when no open crate
+    // takes the line whole. A line also stays whole on a fresh
+    // single-profile crate at its Crate Count table count, even
+    // when the square-row bundle would not fit (e.g. 33 pcs of 4"
+    // rod, which fits staggered), and same-profile lines may join
+    // such a crate up to the table count. Only a line that fits
+    // whole nowhere is split, its pieces dealt heaviest first to
+    // the lightest crate they fit in, so split lines still spread
+    // evenly instead of filling greedily. A piece that fits in no
+    // open crate opens a new one, and an unused empty crate is
+    // dropped then; a piece that fits neither cap on its own still
+    // gets its own crate, and the plan flags it. Layout reuses
+    // the bag rectangles in rows no wider than 25", with bundle
+    // height at or under 23.5". That matches the single-line grid
+    // for rod and flat bar, but it does not capture how angles
+    // and channels nest, so mixed-crate layouts for those
+    // profiles are estimates and can use an extra crate versus
+    // the sheet's nesting math. Crate dimensions are fixed, so
+    // every crate reports 125" x 29" x 33".
     function estimateCombinedCrates(items) {
-      var pieces = [];
+      var crates = [];
+      function newCrate() { var c = { parts: [], weight: 0, rects: [], singleProfile: null, tableJustified: false }; crates.push(c); return c; }
+      function rectsFit(rects) {
+        var dims = packBundleRows(rects, 25);
+        return dims.w <= 25 + 1e-9 && dims.h <= 23.5 + 1e-9;
+      }
+      // Whether a whole line (phase 1) or one piece (phase 2) fits
+      // on a crate: weight under the cap, and either the rectangle
+      // bundle fits or the crate holds only this profile and the
+      // table count allows the total. Returns 'rect', 'table', or
+      // null. Adding rectangles never shrinks a bundle, so a crate
+      // that once failed the rectangle check can only take more of
+      // the same profile through the table path.
+      function fitKind(crate, weightToAdd, qtyToAdd, rectsToAdd, profileKey, tableCount) {
+        if (crate.weight + weightToAdd > 1960 + 1e-9) return null;
+        if (profileKey && tableCount && crate.singleProfile === profileKey && crate.parts.length + qtyToAdd <= tableCount) return 'table';
+        return rectsFit(crate.rects.concat(rectsToAdd)) ? 'rect' : null;
+      }
+      // Callers own singleProfile: a fresh crate takes the placed
+      // line's profile; joining a different profile clears it to
+      // mixed (null); joining the same profile leaves it alone.
+      function placeInto(crate, idx, pw, w, h, length, count, viaTable) {
+        for (var i = 0; i < count; i++) {
+          crate.parts.push({ idx: idx, weight: pw, w: w, h: h, length: length });
+          crate.rects.push({ w: w, h: h });
+        }
+        crate.weight += pw * count;
+        if (viaTable) crate.tableJustified = true;
+      }
+      // Phase 1: whole lines, in order. A line joins the lightest
+      // crate it fits whole on; otherwise it opens a fresh crate
+      // when it fits whole there (rectangle bundle, or its table
+      // count on a fresh single-profile crate whose width fits).
+      var splitItems = [];
       items.forEach(function (item) {
         var pw = item.qty > 0 ? item.weight / item.qty : 0;
-        for (var i = 0; i < item.qty; i++) pieces.push({ idx: item.idx, weight: pw, w: item.rect.w, h: item.rect.h, length: item.length });
+        var itemRects = [];
+        for (var i = 0; i < item.qty; i++) itemRects.push({ w: item.rect.w, h: item.rect.h });
+        var placed = false;
+        if (item.weight <= 1960 + 1e-9) {
+          var order = crates.map(function (c, i) { return i; }).sort(function (a, b2) { return crates[a].weight - crates[b2].weight; });
+          for (var j = 0; j < order.length; j++) {
+            var crate = crates[order[j]];
+            var kind = fitKind(crate, item.weight, item.qty, itemRects, item.profileKey, item.tableCount);
+            if (!kind) continue;
+            placeInto(crate, item.idx, pw, item.rect.w, item.rect.h, item.length, item.qty, kind === 'table');
+            if (crate.singleProfile !== item.profileKey) crate.singleProfile = null;
+            placed = true; break;
+          }
+          if (!placed) {
+            var freshDims = packBundleRows(itemRects, 25);
+            var freshFits = freshDims.w <= 25 + 1e-9 && freshDims.h <= 23.5 + 1e-9;
+            var freshTable = !freshFits && freshDims.w <= 25 + 1e-9 && item.profileKey && item.tableCount && item.qty <= item.tableCount;
+            if (freshFits || freshTable) {
+              var nc = newCrate();
+              placeInto(nc, item.idx, pw, item.rect.w, item.rect.h, item.length, item.qty, !!freshTable);
+              nc.singleProfile = item.profileKey;
+              placed = true;
+            }
+          }
+        }
+        if (!placed) splitItems.push(item);
+      });
+      // Phase 2: lines that fit whole nowhere are split, pieces
+      // dealt heaviest first to the lightest fitting crate.
+      var pieces = [];
+      splitItems.forEach(function (item) {
+        var pw = item.qty > 0 ? item.weight / item.qty : 0;
+        for (var i = 0; i < item.qty; i++) pieces.push({ idx: item.idx, weight: pw, w: item.rect.w, h: item.rect.h, length: item.length, profileKey: item.profileKey, tableCount: item.tableCount });
       });
       pieces.sort(function (a, b) { return b.weight - a.weight; });
-      var totalWeight = 0;
-      pieces.forEach(function (p) { totalWeight += p.weight; });
-      var crates = [];
-      function newCrate() { var c = { parts: [], weight: 0, rects: [] }; crates.push(c); return c; }
-      var startCrates = Math.max(1, Math.ceil(totalWeight / 1960));
-      for (var k = 0; k < startCrates; k++) newCrate();
       pieces.forEach(function (p) {
         var order = crates.map(function (c, i) { return i; }).sort(function (a, b2) { return crates[a].weight - crates[b2].weight; });
         var placed = false;
         for (var j = 0; j < order.length; j++) {
           var crate = crates[order[j]];
-          if (crate.weight + p.weight > 1960 + 1e-9) continue;
-          var dims = packBundleRows(crate.rects.concat([{ w: p.w, h: p.h }]), 25);
-          if (dims.w > 25 + 1e-9 || dims.h > 23.5 + 1e-9) continue;
-          crate.parts.push(p); crate.rects.push({ w: p.w, h: p.h }); crate.weight += p.weight;
+          var kind = fitKind(crate, p.weight, 1, [{ w: p.w, h: p.h }], p.profileKey, p.tableCount);
+          if (!kind) continue;
+          var wasEmpty = crate.parts.length === 0;
+          placeInto(crate, p.idx, p.weight, p.w, p.h, p.length, 1, kind === 'table');
+          if (wasEmpty) crate.singleProfile = p.profileKey;
+          else if (crate.singleProfile !== p.profileKey) crate.singleProfile = null;
           placed = true; break;
         }
         if (!placed) {
-          var nc = newCrate();
-          nc.parts.push(p); nc.rects.push({ w: p.w, h: p.h }); nc.weight += p.weight;
+          var nc2 = newCrate();
+          nc2.parts.push(p); nc2.rects.push({ w: p.w, h: p.h }); nc2.weight += p.weight; nc2.singleProfile = p.profileKey;
           for (var e = 0; e < crates.length; e++) {
             if (crates[e].parts.length === 0) { crates.splice(e, 1); break; }
           }
@@ -317,27 +387,32 @@
           parts: c.parts, weight: c.weight,
           bundleW: dims.w, bundleH: dims.h,
           dims: '125.00" x 29.00" x 33.00"',
-          fitsCrate: dims.w <= 25 + 1e-9 && dims.h <= 23.5 + 1e-9
+          fitsCrate: c.tableJustified || (dims.w <= 25 + 1e-9 && dims.h <= 23.5 + 1e-9)
         };
       });
       return { crates: result };
     }
 
-    // Crate Count page lookup: pieces per crate for a line's
-    // material and dimensions, or null when the page has no row.
-    // Keys match the App memo that builds the map from the feed
-    // range. Channels are not mapped: their descriptions do not
-    // decode into width/height/thickness, so channels keep the
-    // grid math.
+    // Crate Count page lookup key for a line's material and
+    // dimensions, or null when no row can describe it. Keys match
+    // the App memo that builds the map from the feed range.
+    // Channels are not mapped: their descriptions do not decode
+    // into width/height/thickness, so channels keep the grid math.
+    function crateProfileKey(materialType, width, height, thickness, diameter, leg1, leg2) {
+      var mType = (materialType || '').toString().toLowerCase();
+      if (mType.indexOf('rod') !== -1) return 'rod:' + (parseFloat(diameter) || 0);
+      if (mType.indexOf('tube') !== -1) return 'tube:' + (parseFloat(diameter) || 0);
+      if (mType.indexOf('flat') !== -1 || mType.indexOf('bar') !== -1) return 'flat:' + (parseFloat(width) || 0) + 'x' + (parseFloat(thickness) || 0);
+      if (mType.indexOf('angle') !== -1) return 'angle:' + (parseFloat(leg1) || 0) + 'x' + (parseFloat(leg2) || 0) + 'x' + (parseFloat(thickness) || 0);
+      return null;
+    }
+
+    // Pieces per crate for a line's material and dimensions, or
+    // null when the page has no row.
     function crateTableCount(lookup, materialType, width, height, thickness, diameter, leg1, leg2) {
       if (!lookup) return null;
-      var mType = (materialType || '').toString().toLowerCase();
-      var key = null;
-      if (mType.indexOf('rod') !== -1) key = 'rod:' + (parseFloat(diameter) || 0);
-      else if (mType.indexOf('tube') !== -1) key = 'tube:' + (parseFloat(diameter) || 0);
-      else if (mType.indexOf('flat') !== -1 || mType.indexOf('bar') !== -1) key = 'flat:' + (parseFloat(width) || 0) + 'x' + (parseFloat(thickness) || 0);
-      else if (mType.indexOf('angle') !== -1) key = 'angle:' + (parseFloat(leg1) || 0) + 'x' + (parseFloat(leg2) || 0) + 'x' + (parseFloat(thickness) || 0);
-      else return null;
+      var key = crateProfileKey(materialType, width, height, thickness, diameter, leg1, leg2);
+      if (!key) return null;
       var v = lookup[key];
       return (typeof v === 'number' && v > 0) ? v : null;
     }
@@ -1303,11 +1378,13 @@
           });
         }
         // Crate-type lines share crates when two or more are
-        // present: pieces are dealt to the lightest fitting crate,
-        // so crates carry about the same weight. A lone crate line
-        // keeps its single-line result untouched.
+        // present: lines stay whole when they fit whole on a
+        // crate (in line order, lightest fitting crate first),
+        // and only a line that fits whole nowhere is split, its
+        // pieces dealt to the lightest fitting crate. A lone crate
+        // line keeps its single-line result untouched.
         const crateCandidates = lines.filter((l) => l.result && (l.result.containerType === 'Crate' || (bagsFlipToCrates && bagCandidates.some((c) => c.idx === l.idx))));
-        const crateMixItems = crateCandidates.map((l) => ({ idx: l.idx, length: num(l.row.length), weight: l.result.weight, qty: num(l.row.qty), rect: pkgPieceRect(l.row.material, num(l.row.width), num(l.row.height), num(l.row.thickness), num(l.row.diameter), num(l.row.leg1), num(l.row.leg2)) }));
+        const crateMixItems = crateCandidates.map((l) => ({ idx: l.idx, length: num(l.row.length), weight: l.result.weight, qty: num(l.row.qty), rect: pkgPieceRect(l.row.material, num(l.row.width), num(l.row.height), num(l.row.thickness), num(l.row.diameter), num(l.row.leg1), num(l.row.leg2)), profileKey: crateProfileKey(l.row.material, num(l.row.width), num(l.row.height), num(l.row.thickness), num(l.row.diameter), num(l.row.leg1), num(l.row.leg2)), tableCount: crateTableCount(crateCountLookup, l.row.material, num(l.row.width), num(l.row.height), num(l.row.thickness), num(l.row.diameter), num(l.row.leg1), num(l.row.leg2)) }));
         const cratePlan = [];
         if (crateMixItems.length >= 2 && crateMixItems.every((m) => m.rect)) {
           const plan = estimateCombinedCrates(crateMixItems);
@@ -3181,7 +3258,7 @@
                   {builderResults.cratePlan && builderResults.cratePlan.length > 0 && (
                     <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-3">
                       <h3 className="text-sm font-extrabold text-slate-900">Crate Plan</h3>
-                      <p className="text-xs text-slate-500">Crate lines share crates (125" x 29" x 33"): crates are filled to about the same weight, at most 1,960 lbs of material each, and each bundle must fit the 25" x 23.5" cross-section. Shipped weight includes the 140 lb tare per crate.</p>
+                      <p className="text-xs text-slate-500">Crate lines share crates (125" x 29" x 33"): lines stay whole when they fit whole on a crate, at most 1,960 lbs of material each, and each bundle must fit the 25" x 23.5" cross-section. Only a line that fits whole nowhere is split across crates. Shipped weight includes the 140 lb tare per crate.</p>
                       {builderResults.cratePlan.map((c) => (
                         <p key={c.number} className="text-xs font-semibold text-slate-800">
                           Crate {c.number}: {c.lines.map((x) => 'Line ' + (x.idx + 1) + ' — ' + x.count + ' pcs (' + x.desc + ')').join('; ')} — {c.weight.toFixed(1)} lbs material — {(c.weight + 140).toFixed(1)} lbs shipped — {c.dims}{(c.weight > 1960 ? ' — over the 1,960 lb cap' : '') + (!c.fitsCrate ? ' — does not fit the 25" x 23.5" cross-section' : '')}
