@@ -342,12 +342,15 @@
       return (typeof v === 'number' && v > 0) ? v : null;
     }
 
-    function estimatePacking(materialType, length, width, height, thickness, diameter, leg1, leg2, qty, totalWeight, crateCountLookup) {
+    function estimatePacking(materialType, length, width, height, thickness, diameter, leg1, leg2, qty, totalWeight, crateCountLookup, forceCrate) {
       if (!qty || qty <= 0) return "";
       // A bag-bound load at 390 lbs or more goes in a crate instead
       // of bags: heavy poly-bag loads are crated. Box loads (60" or
       // under) are untouched, and so is the 400 lb heavy-load rule.
-      var isCrate = (totalWeight > 400 || (totalWeight >= 390 && length > 60)), isBox = (!isCrate && length <= 60);
+      // forceCrate crates a line regardless of its own weight: the
+      // whole-order flip in the builder uses it for a lone bag line
+      // on a heavy order.
+      var isCrate = (forceCrate || totalWeight > 400 || (totalWeight >= 390 && length > 60)), isBox = (!isCrate && length <= 60);
       var maxWeight = isCrate ? (2100 - 140) : (isBox ? 60 : 150);
       var weightPerPiece = totalWeight / qty;
       var minContainers = Math.ceil(totalWeight / maxWeight);
@@ -1172,10 +1175,10 @@
       // (a lone bag line keeps the sheet's exact math), and
       // crate-type lines share crates through
       // estimateCombinedCrates when two or more are present (a lone
-      // crate line keeps the sheet's exact math). Bag lines whose
-      // combined weight is 390 lbs or more pack as crates instead
-      // (see the flip below); a bag-bound single line at 390+ is
-      // already a crate line. Box lines still
+      // crate line keeps the sheet's exact math). When the whole
+      // order weighs 390 lbs or more, bag lines pack as crates
+      // instead (see the flip below); a bag-bound single line at
+      // 390+ is already a crate line. Box lines still
       // pack per line. Container counts for Crate/Box/Bag come
       // from the first line of the packing text ("N Crates total.")
       // rather
@@ -1260,14 +1263,16 @@
         };
         const bagCandidates = lines.filter((l) => l.result && l.result.containerType === 'Poly Bag');
         const mixItems = bagCandidates.map((l) => ({ idx: l.idx, length: num(l.row.length), weight: l.result.weight, qty: num(l.row.qty), rect: pkgPieceRect(l.row.material, num(l.row.width), num(l.row.height), num(l.row.thickness), num(l.row.diameter), num(l.row.leg1), num(l.row.leg2)) }));
-        // Bag lines whose combined weight reaches 390 lbs go in a
-        // crate instead of bags: they skip the bag plan below and
-        // join the crate candidates, so they pack through the
-        // mixed-crate path. A lone bag line is already a crate line
-        // at 390+ through the single-line rule, so this only ever
-        // flips groups of two or more.
-        const bagGroupWeight = bagCandidates.reduce((sum, l) => sum + (l.result ? l.result.weight : 0), 0);
-        const bagsFlipToCrates = bagCandidates.length >= 2 && bagGroupWeight >= 390;
+        // Whole-order flip: when the whole order (the shipment
+        // totals material weight, skid lines included) reaches
+        // 390 lbs, bag lines go in a crate instead of bags. They
+        // skip the bag plan below and join the crate candidates.
+        // A lone flipped line with no other crate line to mix with
+        // is repacked as a single-line crate just below the crate
+        // block; two or more crate candidates pack through the
+        // mixed-crate path.
+        const orderWeight = lines.reduce((sum, l) => sum + (l.result ? l.result.weight : 0), 0);
+        const bagsFlipToCrates = bagCandidates.length >= 1 && orderWeight >= 390;
         const bagPlan = [];
         if (!bagsFlipToCrates && mixItems.length >= 2 && mixItems.every((m) => m.rect)) {
           const plan = estimateCombinedBags(mixItems);
@@ -1331,6 +1336,24 @@
             const crateLineWeight = l.result.weight;
             l.result = { packing, suggested: 'N/A', dims, containerType: 'Crate', weight: crateLineWeight };
           });
+        }
+        // A flipped bag line with no other crate line to mix with:
+        // repack it as a single-line crate (forced, since its own
+        // weight is under the crate thresholds). When the flip
+        // fired, the single crate candidate is always that flipped
+        // line; the guard below is belt and braces.
+        if (bagsFlipToCrates && crateCandidates.length === 1) {
+          const lone = crateCandidates[0];
+          if (lone.result && lone.result.containerType !== 'Crate') {
+            const lonePacking = estimatePacking(lone.row.material, num(lone.row.length), num(lone.row.width), num(lone.row.height), num(lone.row.thickness), num(lone.row.diameter), num(lone.row.leg1), num(lone.row.leg2), num(lone.row.qty), lone.result.weight, crateCountLookup, true);
+            if (lonePacking) {
+              const loneSuggested = estimateSuggestedBox(lone.row.material, num(lone.row.length), num(lone.row.width), num(lone.row.height), num(lone.row.thickness), num(lone.row.diameter), num(lone.row.leg1), num(lone.row.leg2), num(lone.row.qty), lone.result.weight, lonePacking, PACKAGING_BOXES);
+              const loneDims = estimateDims(lone.row.material, num(lone.row.length), num(lone.row.width), num(lone.row.height), num(lone.row.thickness), num(lone.row.diameter), num(lone.row.leg1), num(lone.row.leg2), num(lone.row.qty), lone.result.weight, lonePacking, PACKAGING_BOXES);
+              const loneHead = lonePacking.match(/^(\d+) (Crate|Box|Bag)(?:es|s)? total\./);
+              const loneCount = loneHead ? parseInt(loneHead[1], 10) : 1;
+              lone.result = { packing: lonePacking, suggested: loneSuggested, dims: loneDims, containerType: 'Crate', weight: lone.result.weight, shipped: lone.result.weight + 140 * loneCount, counts: { Crate: loneCount } };
+            }
+          }
         }
         const complete = lines.filter((l) => l.result);
         const totals = { material: 0, shipped: 0, crates: 0, boxes: 0, bags: 0, skids: 0 };
@@ -3031,7 +3054,7 @@
                 <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-5">
                   <div>
                     <h3 className="text-sm font-extrabold text-slate-900">Order Builder</h3>
-                    <p className="text-xs text-slate-500 mt-1">Build an order line by line — each line packs with the same rules as the Packaging estimator, and the shipment totals add them up. Full Sheet lines of the same size share skids when they fit, bag lines share poly tube bags unless their combined weight is 390 lbs or more (then they go in a crate), and crate lines share crates. Start with one line and add more as needed, up to 20. A line with missing boxes is left out of the totals until it is filled in.</p>
+                    <p className="text-xs text-slate-500 mt-1">Build an order line by line — each line packs with the same rules as the Packaging estimator, and the shipment totals add them up. Full Sheet lines of the same size share skids when they fit, bag lines share poly tube bags unless the whole order weighs 390 lbs or more (then they go in a crate), and crate lines share crates. Start with one line and add more as needed, up to 20. A line with missing boxes is left out of the totals until it is filled in.</p>
                   </div>
                   <div className="bg-slate-50 rounded-xl border border-slate-200 p-4">
                     <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500 block">Shipment Totals ({builderResults.completeCount} of {builderRows.length} {builderRows.length === 1 ? 'line' : 'lines'} complete)</span>
