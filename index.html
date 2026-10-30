@@ -757,9 +757,9 @@
       { tab: 'leadtime', target: 'leadtime-qty', title: 'Enter a quantity', text: 'Enter a quantity in feet, or tap a quick button (500, 2k, 5k). Nothing is quoted until a part and a quantity over zero are both entered. On the next step, the tour loads an example quantity so you can see a finished verdict.' },
       { tab: 'leadtime', target: 'leadtime-result', title: 'Read the verdict', text: 'The tour has loaded an example here at 1,000 feet, fully covered by stock on hand, so this panel turns green with a 1-2 business day verdict, showing stock coverage, the die queue ahead of it, and a ready date. Use the button below to see a production example instead — a quantity over stock, which turns the panel yellow with setup and run time.' },
       { tab: 'fullsheet', target: 'fullsheet-search', title: 'Pick a full sheet', text: 'Search by FS- part number or description, then pick from the top 10 matches. Each shows sheets on hand and its billet family.' },
-      { tab: 'fullsheet', target: 'fullsheet-result', title: 'Read the full-sheet verdict', text: 'Finished stock covers the order first. Any shortfall plus the queue ahead of it comes out of billets, with extrusion time, a fixed 14 days to turn billets into finished sheets, and a 2-day changeover when that billet family and color is not already running.' },
+      { tab: 'fullsheet', target: 'fullsheet-result', title: 'Read the full-sheet verdict', text: 'The tour has loaded an example here at 10 sheets, so this panel shows a finished verdict instead of the placeholder. Finished stock covers the order first. Any shortfall plus the queue ahead of it comes out of billets, with extrusion time, a fixed 14 days to turn billets into finished sheets, and a 2-day changeover when that billet family and color is not already running.' },
       { tab: 'inventory', target: 'inventory-search', title: 'Search the stock list', text: 'Search by part number, description, or bin location, and use the dropdown to narrow to In Stock Only.' },
-      { tab: 'inventory', target: 'inventory-table', title: 'What a row gives you', text: 'Every row shows the part, unit of measure, length, quantity available (net of quantity on order), quantity on order, primary bin, and last audit date. A quantity-on-order number opens the orders calling for that part family, and Quote loads the part into the Lead Time Calculator.' },
+      { tab: 'inventory', target: 'inventory-table', title: 'What a row gives you', text: 'Every row shows the part, unit of measure, length, quantity available (net of quantity on order), quantity on order, primary bin, and last audit date. A quantity-on-order number opens the orders calling for that part family, and Quote loads the part into the Lead Time Calculator. Use the button below to see that popup open for a real part with orders on order.' },
       { tab: 'oor', target: 'oor-search', title: 'Find an open order', text: 'Search by SO number, customer, part, PO, or date. The date picker shows only orders promised on that date, and the die dropdown narrows to one profile die.' },
       { tab: 'oor', target: 'oor-table', title: 'Open an order', text: 'Each row is one line of an order, earliest promised date first. Clicking an SO number opens the order card with every line on that order, and clicking another line in the card switches the details to that line.' },
       { tab: 'inspection', target: 'inspection-search', title: 'Find a plant line', text: 'Search by line number, part, die, resin, or color, and use the dropdown to switch between All Lines and In-Line Only.' },
@@ -847,6 +847,13 @@
       // leaves Lead Time, so a demo never overwrites a real quote.
       const [tourSavedInquiry, setTourSavedInquiry] = useState(null);
       const [tourExampleQty, setTourExampleQty] = useState(null);
+      // Full Sheet example, same save/restore pattern as Lead Time.
+      const [tourSavedFs, setTourSavedFs] = useState(null);
+      const [tourExampleFs, setTourExampleFs] = useState(false);
+      // Inventory demo: while the Qty On Order popup is shown, the tour
+      // overlay hides so the popup is visible; closing the popup
+      // resumes the tour at the same step.
+      const [tourPaused, setTourPaused] = useState(false);
       const startTour = () => {
         setShowPageHelp(false);
         setShowBoxList(false);
@@ -854,6 +861,9 @@
         setOorModalItem(null);
         setTourSavedInquiry({ partId: selectedPartId, qty: inquiredQty });
         setTourExampleQty(null);
+        setTourSavedFs({ partId: selectedFsId, qty: fsQty });
+        setTourExampleFs(false);
+        setTourPaused(false);
         setTourStep(0);
         setTourActive(true);
       };
@@ -863,9 +873,29 @@
           setInquiredQty(tourSavedInquiry.qty);
           setTourSavedInquiry(null);
         }
+        if (tourSavedFs) {
+          setSelectedFsId(tourSavedFs.partId);
+          setFsQty(tourSavedFs.qty);
+          setTourSavedFs(null);
+        }
         setTourExampleQty(null);
+        setTourExampleFs(false);
+        setTourPaused(false);
         setTourActive(false);
         setTourRect(null);
+      };
+      const closeInventoryOorModal = () => {
+        setOorModalItem(null);
+        if (tourPaused) setTourPaused(false);
+      };
+      const openInventoryOorExample = () => {
+        const list = inventoryList || [];
+        const orders = openOrdersList || [];
+        const candidate = list.find((i) => i.qtyOnOrder > 0 && orders.some((o) => o.familyCode === extractFamilyCode(i.partNumber) || (o.newPartNum || '').toUpperCase() === (i.partNumber || '').toUpperCase()))
+          || list.find((i) => i.qtyOnOrder > 0) || null;
+        if (!candidate) return;
+        setOorModalItem(candidate);
+        setTourPaused(true);
       };
       const tourExamplePart = () => {
         const list = inventoryList || [];
@@ -878,8 +908,12 @@
         setInquiredQty(String(qty));
         setTourExampleQty(String(qty));
       };
+      const tourExampleFsPart = () => {
+        const list = fsList || [];
+        return list.find((i) => i.partNumber === 'FS-125RBK042-120') || list.find((i) => i.qtyAvailable > 0) || list[0] || null;
+      };
       useEffect(() => {
-        if (!tourActive) return;
+        if (!tourActive || tourPaused) return;
         const step = TOUR_STEPS[tourStep];
         if (!step) return;
         if (activeTab !== step.tab) { setTourRect(null); setActiveTab(step.tab); return; }
@@ -890,6 +924,15 @@
           setSelectedPartId(tourSavedInquiry.partId);
           setInquiredQty(tourSavedInquiry.qty);
           setTourExampleQty(null);
+        }
+        if (step.target === 'fullsheet-result' && !tourExampleFs) {
+          const part = tourExampleFsPart();
+          if (part) { setSelectedFsId(part.id); setFsQty(10); setTourExampleFs(true); }
+        }
+        if (step.tab !== 'fullsheet' && tourExampleFs && tourSavedFs) {
+          setSelectedFsId(tourSavedFs.partId);
+          setFsQty(tourSavedFs.qty);
+          setTourExampleFs(false);
         }
         let cancelled = false;
         const measure = () => {
@@ -913,7 +956,7 @@
         window.addEventListener('resize', onResize);
         window.addEventListener('keydown', onKey);
         return () => { cancelled = true; window.removeEventListener('resize', onResize); window.removeEventListener('keydown', onKey); };
-      }, [tourActive, tourStep, activeTab, tourExampleQty, tourSavedInquiry]);
+      }, [tourActive, tourStep, activeTab, tourExampleQty, tourSavedInquiry, tourExampleFs, tourSavedFs, tourPaused]);
       // Order card modal: set to an order from openOrdersList when its
       // SO number is clicked, anywhere order numbers appear.
       const [selectedOrder, setSelectedOrder] = useState(null);
@@ -3653,7 +3696,7 @@
             return (
               <div
                 className="fixed inset-0 bg-black/50 flex items-start justify-center p-4 pt-10 z-50 overflow-y-auto"
-                onClick={() => setOorModalItem(null)}
+                onClick={closeInventoryOorModal}
               >
                 <div
                   className="bg-white rounded-2xl shadow-xl max-w-4xl w-full p-6 space-y-5"
@@ -3667,7 +3710,7 @@
                       </div>
                       <p className="text-xs text-slate-500 font-medium mt-1">{oorModalItem.description}</p>
                     </div>
-                    <button onClick={() => setOorModalItem(null)} className="text-slate-400 hover:text-slate-700 text-xl leading-none px-1">×</button>
+                    <button onClick={closeInventoryOorModal} className="text-slate-400 hover:text-slate-700 text-xl leading-none px-1">×</button>
                   </div>
 
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -3716,12 +3759,12 @@
 
                   <div className="flex items-center justify-between pt-1">
                     <button
-                      onClick={() => { setSelectedPartId(oorModalItem.id); setOorModalItem(null); setActiveTab('leadtime'); }}
+                      onClick={() => { setSelectedPartId(oorModalItem.id); setOorModalItem(null); setActiveTab('leadtime'); setTourPaused(false); setTourActive(false); setTourRect(null); setTourExampleQty(null); setTourSavedInquiry(null); setTourExampleFs(false); setTourSavedFs(null); }}
                       className="px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-semibold hover:bg-blue-700 transition"
                     >
                       Calculate Lead Time for this SKU
                     </button>
-                    <button onClick={() => setOorModalItem(null)} className="px-4 py-2 bg-slate-900 text-white rounded-lg text-xs font-semibold hover:bg-slate-700 transition">Close</button>
+                    <button onClick={closeInventoryOorModal} className="px-4 py-2 bg-slate-900 text-white rounded-lg text-xs font-semibold hover:bg-slate-700 transition">{tourPaused ? 'Back to tour' : 'Close'}</button>
                   </div>
                 </div>
               </div>
@@ -3732,13 +3775,40 @@
               Next / End tour. The backdrop blocks page clicks while the
               tour runs; Escape also ends it. When a target is not on
               screen, the card centres itself instead of pointing nowhere. */}
-          {tourActive && TOUR_STEPS[tourStep] && (() => {
+          {tourActive && !tourPaused && TOUR_STEPS[tourStep] && (() => {
             const step = TOUR_STEPS[tourStep];
             const vw = typeof window !== 'undefined' ? window.innerWidth : 1024;
             const vh = typeof window !== 'undefined' ? window.innerHeight : 800;
-            const below = tourRect && (tourRect.top + tourRect.height + 260 < vh);
-            const tipTop = tourRect ? (below ? tourRect.top + tourRect.height + 16 : Math.max(12, tourRect.top - 260)) : 80;
-            const tipLeft = tourRect ? Math.max(12, Math.min(tourRect.left, vw - 332)) : 0;
+            // Card placement: never overlap the spotlight it explains.
+            // Prefer below, then above, then to the left, then to the
+            // right of the spotlight; fall back to the bottom-left
+            // corner only when no side fits (a very tall spotlight).
+            // The old code put the card above a tall panel with its
+            // left edge at the panel's left edge, so it covered the
+            // top of the panel it was describing.
+            const cardW = 320;
+            const cardH = 320;
+            const clampLeft = (l) => Math.max(12, Math.min(l, vw - cardW - 12));
+            let tipTop = 80;
+            let tipLeft = 0;
+            if (tourRect) {
+              if (tourRect.top + tourRect.height + 16 + cardH <= vh) {
+                tipTop = tourRect.top + tourRect.height + 16;
+                tipLeft = clampLeft(tourRect.left);
+              } else if (tourRect.top - 16 - cardH >= 12) {
+                tipTop = tourRect.top - 16 - cardH;
+                tipLeft = clampLeft(tourRect.left);
+              } else if (tourRect.left - 16 - cardW >= 12) {
+                tipTop = Math.max(12, Math.min(tourRect.top, vh - cardH - 12));
+                tipLeft = tourRect.left - 16 - cardW;
+              } else if (tourRect.left + tourRect.width + 16 + cardW <= vw - 12) {
+                tipTop = Math.max(12, Math.min(tourRect.top, vh - cardH - 12));
+                tipLeft = tourRect.left + tourRect.width + 16;
+              } else {
+                tipTop = Math.max(12, vh - cardH - 12);
+                tipLeft = 12;
+              }
+            }
             return (
               <div>
                 <div className="fixed inset-0 z-[65]" onClick={(e) => e.stopPropagation()} />
@@ -3767,6 +3837,22 @@
                       >
                         {tourExampleQty === '5000' ? 'Show in-stock example' : 'Show production example'}
                       </button>
+                    </div>
+                  )}
+                  {step.target === 'fullsheet-result' && tourExampleFs && (
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <span className="text-[11px] font-bold text-slate-500">Example: {selectedFs ? selectedFs.partNumber : '—'} • {fsQty} sheets</span>
+                    </div>
+                  )}
+                  {step.target === 'inventory-table' && (
+                    <div className="mt-3">
+                      <button
+                        onClick={openInventoryOorExample}
+                        className="px-2.5 py-1.5 text-xs font-bold rounded-lg bg-blue-50 border border-blue-200 text-blue-700 hover:bg-blue-100 transition"
+                      >
+                        Show an example
+                      </button>
+                      <p className="text-[11px] font-medium text-slate-500 mt-1.5">This opens the orders popup for a part with orders on order. Closing it brings you back to the tour.</p>
                     </div>
                   )}
                   {!tourRect && (
