@@ -656,7 +656,7 @@
       const [fsSearchQuery, setFsSearchQuery] = useState('');
       const [selectedFsId, setSelectedFsId] = useState(null);
       const [fsQty, setFsQty] = useState(10);
-      // Order Builder rows: each row is one line item, with the
+      // Packaging Estimator rows: each row is one line item, with the
       // packaging dimensions and quantity. The tab opens with one
       // row; "Add line item" appends up to 20, and "Clear all
       // lines" resets to that one blank row.
@@ -664,7 +664,7 @@
         { id: 1, material: 'Flat Bar', length: '', width: '', height: '', thickness: '', diameter: '', wall: '', leg1: '', leg2: '', qty: '' },
       ]);
       const [builderNextId, setBuilderNextId] = useState(2);
-      // Box list modal on the Order Builder tab: the box sizes from
+      // Box list modal on the Packaging Estimator tab: the box sizes from
       // the Packaging Tool Settings tab, kept available as a link
       // now that the single-item Packaging tab is gone.
       const [showBoxList, setShowBoxList] = useState(false);
@@ -1192,7 +1192,7 @@
         });
       }, [dailyShipmentsList, dailySearchQuery, dailyDateFilter]);
 
-      // Order Builder: each row packs with the same functions as the
+      // Packaging Estimator: each row packs with the same functions as the
       // single-item estimator, except Full Sheet lines of the same
       // footprint (length and width) share skids through
       // estimateCombinedSkids, bag-type lines share poly tube bags
@@ -2033,7 +2033,7 @@
                 }`}
               >
                 <Package className="w-4 h-4" />
-                Order Builder
+                Packaging Estimator
               </button>
               <button
                 onClick={() => setActiveTab('daily')}
@@ -2975,7 +2975,7 @@
               <div className="space-y-6">
                 <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-5">
                   <div>
-                    <h3 className="text-sm font-extrabold text-slate-900">Order Builder</h3>
+                    <h3 className="text-sm font-extrabold text-slate-900">Packaging Estimator</h3>
                     <p className="text-xs text-slate-500 mt-1">Build an order line by line — each line packs with the shop's packaging rules, and the shipment totals add them up. Full Sheet lines of the same size share skids when they fit, bag lines share poly tube bags unless the whole order weighs 390 lbs or more (then they go in a crate), and crate lines share crates. Start with one line and add more as needed, up to 20. A line with missing boxes is left out of the totals until it is filled in.</p>
                     <button onClick={() => setShowBoxList(true)} className="text-xs font-bold text-blue-600 hover:text-blue-800 underline mt-1">View available boxes</button>
                   </div>
@@ -3468,7 +3468,7 @@
             );
           })()}
           {/* Box List Modal: the box sizes from the Packaging Tool
-              Settings tab, opened from the Order Builder link. */}
+              Settings tab, opened from the Packaging Estimator link. */}
           {showBoxList && (
             <div
               className="fixed inset-0 bg-black/50 flex items-start justify-center p-4 pt-10 z-[60] overflow-y-auto"
