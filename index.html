@@ -189,12 +189,13 @@
     // than 10" (the width today's bag math lays pieces out at). A
     // rectangle wider than 10" gets its own row. Bundle width is the
     // widest row; bundle height is the sum of row heights.
-    function packBagRows(rects) {
+    function packBundleRows(rects, maxRowWidth) {
+      var mw = maxRowWidth || 10;
       var rows = [];
       rects.forEach(function (r) {
         var placed = false;
         for (var i = 0; i < rows.length; i++) {
-          if (rows[i].width + r.w <= 10 + 1e-9) { rows[i].width += r.w; if (r.h > rows[i].height) rows[i].height = r.h; placed = true; break; }
+          if (rows[i].width + r.w <= mw + 1e-9) { rows[i].width += r.w; if (r.h > rows[i].height) rows[i].height = r.h; placed = true; break; }
         }
         if (!placed) rows.push({ width: r.w, height: r.h });
       });
@@ -236,7 +237,7 @@
         for (var j = 0; j < order.length; j++) {
           var bag = bags[order[j]];
           if (bag.weight + p.weight > 150 + 1e-9) continue;
-          var dims = packBagRows(bag.rects.concat([{ w: p.w, h: p.h }]));
+          var dims = packBundleRows(bag.rects.concat([{ w: p.w, h: p.h }]), 10);
           if (dims.w + dims.h > 19 + 1e-9) continue;
           bag.parts.push(p); bag.rects.push({ w: p.w, h: p.h }); bag.weight += p.weight;
           if (p.length > bag.maxLength) bag.maxLength = p.length;
@@ -251,7 +252,7 @@
         }
       });
       var result = bags.filter(function (b) { return b.parts.length > 0; }).map(function (b) {
-        var dims = packBagRows(b.rects);
+        var dims = packBundleRows(b.rects, 10);
         return {
           parts: b.parts, weight: b.weight, maxLength: b.maxLength,
           bundleW: dims.w, bundleH: dims.h,
@@ -260,6 +261,66 @@
         };
       });
       return { bags: result };
+    }
+
+    // Combined crates for crate-type lines: the crate is fixed at
+    // 125" x 29" x 33" with a 25" x 23.5" cross-section, and each
+    // crate holds at most 1,960 lbs of material (2,100 gross minus
+    // the 140 lb tare). Pieces are dealt heaviest first to the
+    // lightest crate they fit in (weight and cross-section), so
+    // crates carry about the same weight, like mixed bags. A piece
+    // that fits in no open crate opens a new one, and an unused
+    // empty crate is dropped then; a piece that fits neither cap on
+    // its own still gets its own crate, and the plan flags it.
+    // Layout reuses the bag rectangles in rows no wider than 25",
+    // with bundle height at or under 23.5". That matches the
+    // single-line grid for rod and flat bar, but it does not
+    // capture how angles and channels nest, so mixed-crate layouts
+    // for those profiles are estimates and can use an extra crate
+    // versus the sheet's nesting math. Crate dimensions are fixed,
+    // so every crate reports 125" x 29" x 33".
+    function estimateCombinedCrates(items) {
+      var pieces = [];
+      items.forEach(function (item) {
+        var pw = item.qty > 0 ? item.weight / item.qty : 0;
+        for (var i = 0; i < item.qty; i++) pieces.push({ idx: item.idx, weight: pw, w: item.rect.w, h: item.rect.h, length: item.length });
+      });
+      pieces.sort(function (a, b) { return b.weight - a.weight; });
+      var totalWeight = 0;
+      pieces.forEach(function (p) { totalWeight += p.weight; });
+      var crates = [];
+      function newCrate() { var c = { parts: [], weight: 0, rects: [] }; crates.push(c); return c; }
+      var startCrates = Math.max(1, Math.ceil(totalWeight / 1960));
+      for (var k = 0; k < startCrates; k++) newCrate();
+      pieces.forEach(function (p) {
+        var order = crates.map(function (c, i) { return i; }).sort(function (a, b2) { return crates[a].weight - crates[b2].weight; });
+        var placed = false;
+        for (var j = 0; j < order.length; j++) {
+          var crate = crates[order[j]];
+          if (crate.weight + p.weight > 1960 + 1e-9) continue;
+          var dims = packBundleRows(crate.rects.concat([{ w: p.w, h: p.h }]), 25);
+          if (dims.w > 25 + 1e-9 || dims.h > 23.5 + 1e-9) continue;
+          crate.parts.push(p); crate.rects.push({ w: p.w, h: p.h }); crate.weight += p.weight;
+          placed = true; break;
+        }
+        if (!placed) {
+          var nc = newCrate();
+          nc.parts.push(p); nc.rects.push({ w: p.w, h: p.h }); nc.weight += p.weight;
+          for (var e = 0; e < crates.length; e++) {
+            if (crates[e].parts.length === 0) { crates.splice(e, 1); break; }
+          }
+        }
+      });
+      var result = crates.filter(function (c) { return c.parts.length > 0; }).map(function (c) {
+        var dims = packBundleRows(c.rects, 25);
+        return {
+          parts: c.parts, weight: c.weight,
+          bundleW: dims.w, bundleH: dims.h,
+          dims: '125.00" x 29.00" x 33.00"',
+          fitsCrate: dims.w <= 25 + 1e-9 && dims.h <= 23.5 + 1e-9
+        };
+      });
+      return { crates: result };
     }
 
     function estimatePacking(materialType, length, width, height, thickness, diameter, leg1, leg2, qty, totalWeight) {
@@ -1041,12 +1102,15 @@
       // Order Builder: each row packs with the same functions as the
       // single-item estimator, except Full Sheet lines of the same
       // footprint (length and width) share skids through
-      // estimateCombinedSkids, and bag-type lines share poly tube
-      // bags through estimateCombinedBags when two or more are
-      // present (a lone bag line keeps the sheet's exact math).
-      // Crate and box lines still pack per line. Container counts
-      // for Crate/Box/Bag come from the
-      // first line of the packing text ("N Crates total.") rather
+      // estimateCombinedSkids, bag-type lines share poly tube bags
+      // through estimateCombinedBags when two or more are present
+      // (a lone bag line keeps the sheet's exact math), and
+      // crate-type lines share crates through
+      // estimateCombinedCrates when two or more are present (a lone
+      // crate line keeps the sheet's exact math). Box lines still
+      // pack per line. Container counts for Crate/Box/Bag come
+      // from the first line of the packing text ("N Crates total.")
+      // rather
       // than a second copy of the container-count math. Shipped
       // weight adds tare per container (crate 140, skid 100/85);
       // boxes and bags have no tare. Rows with missing boxes or an
@@ -1157,11 +1221,46 @@
             l.result = { packing, suggested: 'N/A', dims, containerType: 'Poly Bag', weight: lineWeight };
           });
         }
+        // Crate-type lines share crates when two or more are
+        // present: pieces are dealt to the lightest fitting crate,
+        // so crates carry about the same weight. A lone crate line
+        // keeps its single-line result untouched.
+        const crateCandidates = lines.filter((l) => l.result && l.result.containerType === 'Crate');
+        const crateMixItems = crateCandidates.map((l) => ({ idx: l.idx, length: num(l.row.length), weight: l.result.weight, qty: num(l.row.qty), rect: pkgPieceRect(l.row.material, num(l.row.width), num(l.row.height), num(l.row.thickness), num(l.row.diameter), num(l.row.leg1), num(l.row.leg2)) }));
+        const cratePlan = [];
+        if (crateMixItems.length >= 2 && crateMixItems.every((m) => m.rect)) {
+          const plan = estimateCombinedCrates(crateMixItems);
+          let crateNum = 0;
+          plan.crates.forEach((c) => {
+            crateNum += 1;
+            const lineMap = {};
+            c.parts.forEach((p) => { if (!lineMap[p.idx]) lineMap[p.idx] = { idx: p.idx, count: 0, desc: '' }; lineMap[p.idx].count += 1; });
+            Object.keys(lineMap).forEach((k) => {
+              const l = crateCandidates.find((c2) => c2.idx === parseInt(k, 10));
+              lineMap[k].desc = l ? lineDesc(l.row) : '';
+            });
+            cratePlan.push({ number: crateNum, weight: c.weight, dims: c.dims, fitsCrate: c.fitsCrate, lines: Object.keys(lineMap).map((k) => lineMap[k]) });
+          });
+          lines.forEach((l) => {
+            if (!crateCandidates.some((c) => c.idx === l.idx)) return;
+            l.mixedCrate = true;
+            const mine = cratePlan.filter((c) => c.lines.some((x) => x.idx === l.idx));
+            const packing = mine.map((c) => {
+              const part = c.lines.find((x) => x.idx === l.idx);
+              const others = c.lines.filter((x) => x.idx !== l.idx).map((x) => 'Line ' + (x.idx + 1));
+              const shared = others.length > 0 ? ' (shared with ' + others.join(', ') + ')' : '';
+              return 'Crate ' + c.number + ': ' + part.count + ' pcs' + shared;
+            }).join('\n');
+            const dims = mine.map((c) => 'Crate ' + c.number + ': ' + c.dims).join('\n');
+            const crateLineWeight = l.result.weight;
+            l.result = { packing, suggested: 'N/A', dims, containerType: 'Crate', weight: crateLineWeight };
+          });
+        }
         const complete = lines.filter((l) => l.result);
         const totals = { material: 0, shipped: 0, crates: 0, boxes: 0, bags: 0, skids: 0 };
         complete.forEach((l) => {
           totals.material += l.result.weight;
-          if (l.fsInfo || l.mixedBag) return;
+          if (l.fsInfo || l.mixedBag || l.mixedCrate) return;
           totals.shipped += l.result.shipped;
           totals.crates += l.result.counts.Crate || 0;
           totals.boxes += l.result.counts.Box || 0;
@@ -1175,7 +1274,11 @@
           totals.shipped += b.weight;
           totals.bags += 1;
         });
-        return { lines, completeCount: complete.length, totals, skidPlan, bagPlan };
+        cratePlan.forEach((c) => {
+          totals.shipped += c.weight + 140;
+          totals.crates += 1;
+        });
+        return { lines, completeCount: complete.length, totals, skidPlan, bagPlan, cratePlan };
       }, [builderRows]);
       const updateBuilderRow = (id, key, value) => {
         setBuilderRows((rows) => rows.map((r) => (r.id === id ? { ...r, [key]: value } : r)));
@@ -2852,7 +2955,7 @@
                 <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-5">
                   <div>
                     <h3 className="text-sm font-extrabold text-slate-900">Order Builder</h3>
-                    <p className="text-xs text-slate-500 mt-1">Build an order line by line — each line packs with the same rules as the Packaging estimator, and the shipment totals add them up. Full Sheet lines of the same size share skids when they fit, and bag lines share poly tube bags. Start with one line and add more as needed, up to 20. A line with missing boxes is left out of the totals until it is filled in.</p>
+                    <p className="text-xs text-slate-500 mt-1">Build an order line by line — each line packs with the same rules as the Packaging estimator, and the shipment totals add them up. Full Sheet lines of the same size share skids when they fit, bag lines share poly tube bags, and crate lines share crates. Start with one line and add more as needed, up to 20. A line with missing boxes is left out of the totals until it is filled in.</p>
                   </div>
                   <div className="bg-slate-50 rounded-xl border border-slate-200 p-4">
                     <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500 block">Shipment Totals ({builderResults.completeCount} of {builderRows.length} {builderRows.length === 1 ? 'line' : 'lines'} complete)</span>
@@ -2962,6 +3065,17 @@
                       {builderResults.bagPlan.map((b) => (
                         <p key={b.number} className="text-xs font-semibold text-slate-800">
                           Bag {b.number}: {b.lines.map((x) => 'Line ' + (x.idx + 1) + ' — ' + x.count + ' pcs (' + x.desc + ')').join('; ')} — {b.weight.toFixed(1)} lbs — {b.dims}{(b.weight > 150 ? ' — over the 150 lb cap' : '') + (!b.fitsTube ? ' — does not fit the 19" tube' : '')}
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                  {builderResults.cratePlan && builderResults.cratePlan.length > 0 && (
+                    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-3">
+                      <h3 className="text-sm font-extrabold text-slate-900">Crate Plan</h3>
+                      <p className="text-xs text-slate-500">Crate lines share crates (125" x 29" x 33"): crates are filled to about the same weight, at most 1,960 lbs of material each, and each bundle must fit the 25" x 23.5" cross-section. Shipped weight includes the 140 lb tare per crate.</p>
+                      {builderResults.cratePlan.map((c) => (
+                        <p key={c.number} className="text-xs font-semibold text-slate-800">
+                          Crate {c.number}: {c.lines.map((x) => 'Line ' + (x.idx + 1) + ' — ' + x.count + ' pcs (' + x.desc + ')').join('; ')} — {c.weight.toFixed(1)} lbs material — {(c.weight + 140).toFixed(1)} lbs shipped — {c.dims}{(c.weight > 1960 ? ' — over the 1,960 lb cap' : '') + (!c.fitsCrate ? ' — does not fit the 25" x 23.5" cross-section' : '')}
                         </p>
                       ))}
                     </div>
