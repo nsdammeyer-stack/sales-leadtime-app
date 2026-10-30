@@ -742,6 +742,36 @@
       },
     };
 
+
+    // Guided tour: one spotlight walkthrough across all seven tabs.
+    // Each step names its tab so the tour can switch tabs itself, and
+    // a data-tour target that is always on screen for that tab. Steps
+    // point at stable controls, not at results that only appear after
+    // a search, so a step never depends on the user having picked
+    // something first.
+    const TOUR_STEPS = [
+      { tab: 'leadtime', target: 'header-badges', title: 'At a glance', text: 'These two badges are display-only: how many open orders are in the backlog, and how many plant lines are currently in line.' },
+      { tab: 'leadtime', target: 'header-actions', title: 'Refresh and help', text: 'Refresh data reloads the feed right now (it also refreshes on its own every 30 minutes). How to use this page is the quick written reference; Take the tour is this walkthrough.' },
+      { tab: 'leadtime', target: 'nav-tabs', title: 'The seven tabs', text: 'Everything lives under these tabs. The tour walks them in order, switching tabs for you, and you can end it at any time.' },
+      { tab: 'leadtime', target: 'leadtime-search', title: 'Pick a part', text: 'Search by part number, die, or description, then pick from the top 10 matches. Each match shows stock on hand and its die.' },
+      { tab: 'leadtime', target: 'leadtime-qty', title: 'Enter a quantity', text: 'Enter a quantity in feet, or tap a quick button (500, 2k, 5k). Nothing is quoted until a part and a quantity over zero are both entered.' },
+      { tab: 'leadtime', target: 'leadtime-result', title: 'Read the verdict', text: 'This panel turns green when the order is fully in stock (1-2 business days) or yellow when production is needed, with the stock coverage, the die queue ahead of it, and a ready date.' },
+      { tab: 'fullsheet', target: 'fullsheet-search', title: 'Pick a full sheet', text: 'Search by FS- part number or description, then pick from the top 10 matches. Each shows sheets on hand and its billet family.' },
+      { tab: 'fullsheet', target: 'fullsheet-result', title: 'Read the full-sheet verdict', text: 'Finished stock covers the order first. Any shortfall plus the queue ahead of it comes out of billets, with extrusion time, a fixed 14 days to turn billets into finished sheets, and a 2-day changeover when that billet family and color is not already running.' },
+      { tab: 'inventory', target: 'inventory-search', title: 'Search the stock list', text: 'Search by part number, description, or bin location, and use the dropdown to narrow to In Stock Only.' },
+      { tab: 'inventory', target: 'inventory-table', title: 'What a row gives you', text: 'Every row shows the part, unit of measure, length, quantity available (net of quantity on order), quantity on order, primary bin, and last audit date. A quantity-on-order number opens the orders calling for that part family, and Quote loads the part into the Lead Time Calculator.' },
+      { tab: 'oor', target: 'oor-search', title: 'Find an open order', text: 'Search by SO number, customer, part, PO, or date. The date picker shows only orders promised on that date, and the die dropdown narrows to one profile die.' },
+      { tab: 'oor', target: 'oor-table', title: 'Open an order', text: 'Each row is one line of an order, earliest promised date first. Clicking an SO number opens the order card with every line on that order, and clicking another line in the card switches the details to that line.' },
+      { tab: 'inspection', target: 'inspection-search', title: 'Find a plant line', text: 'Search by line number, part, die, resin, or color, and use the dropdown to switch between All Lines and In-Line Only.' },
+      { tab: 'inspection', target: 'inspection-table', title: 'What counts as in line', text: 'A line counts as in line when it has a resin and a numeric target rate. In-line dies skip the 10-day setup in lead-time quotes.' },
+      { tab: 'builder', target: 'builder-totals', title: 'Shipment totals', text: 'Totals add up every complete line: material weight, shipped weight with skid and crate tare, and container counts by type, plus a per-skid and per-crate summary when those plans exist.' },
+      { tab: 'builder', target: 'builder-line', title: 'Fill in a line', text: 'Pick a material, then fill in the blue required boxes for it — tubes need wall thickness, angles need thickness. A line with missing boxes is left out of the totals until it is filled in.' },
+      { tab: 'builder', target: 'builder-add', title: 'Grow the order', text: 'Start with one line and add up to 20. Remove drops a row; Clear all lines resets to one blank row.' },
+      { tab: 'builder', target: 'builder-boxlist', title: 'Available boxes', text: 'This link opens the 16-box list. Each line card still shows its own suggested box.' },
+      { tab: 'daily', target: 'daily-search', title: 'Find a shipment', text: 'Search by SO number, customer, part, tracking, PO, or date. The date picker shows only shipments promised on that date, newest first.' },
+      { tab: 'daily', target: 'daily-table', title: 'Read a shipment row', text: 'Dates shown are promise dates. SO numbers here are display-only — to open an order, click its SO number on the Open Orders tab.' },
+    ];
+
     function App() {
       const [data, setData] = useState(null);
       const [loading, setLoading] = useState(true);
@@ -805,6 +835,49 @@
       const [showBoxList, setShowBoxList] = useState(false);
       // Page help modal: content follows the active tab (PAGE_HELP).
       const [showPageHelp, setShowPageHelp] = useState(false);
+      // Guided tour state. The tour is one flat step list across tabs;
+      // the effect below switches tabs itself, then spotlights the
+      // step's data-tour target once that tab has rendered.
+      const [tourActive, setTourActive] = useState(false);
+      const [tourStep, setTourStep] = useState(0);
+      const [tourRect, setTourRect] = useState(null);
+      const startTour = () => {
+        setShowPageHelp(false);
+        setShowBoxList(false);
+        setSelectedOrder(null);
+        setOorModalItem(null);
+        setTourStep(0);
+        setTourActive(true);
+      };
+      const endTour = () => { setTourActive(false); setTourRect(null); };
+      useEffect(() => {
+        if (!tourActive) return;
+        const step = TOUR_STEPS[tourStep];
+        if (!step) return;
+        if (activeTab !== step.tab) { setTourRect(null); setActiveTab(step.tab); return; }
+        let cancelled = false;
+        const measure = () => {
+          const el = document.querySelector('[data-tour="' + step.target + '"]');
+          if (!el) { if (!cancelled) setTourRect(null); return; }
+          el.scrollIntoView({ block: 'center' });
+          setTimeout(() => {
+            if (cancelled) return;
+            const r = el.getBoundingClientRect();
+            setTourRect({ top: r.top, left: r.left, width: r.width, height: r.height });
+          }, 300);
+        };
+        measure();
+        const onResize = () => {
+          const el = document.querySelector('[data-tour="' + step.target + '"]');
+          if (!el) return;
+          const r = el.getBoundingClientRect();
+          setTourRect({ top: r.top, left: r.left, width: r.width, height: r.height });
+        };
+        const onKey = (e) => { if (e.key === 'Escape') endTour(); };
+        window.addEventListener('resize', onResize);
+        window.addEventListener('keydown', onKey);
+        return () => { cancelled = true; window.removeEventListener('resize', onResize); window.removeEventListener('keydown', onKey); };
+      }, [tourActive, tourStep, activeTab]);
       // Order card modal: set to an order from openOrdersList when its
       // SO number is clicked, anywhere order numbers appear.
       const [selectedOrder, setSelectedOrder] = useState(null);
@@ -2063,7 +2136,7 @@
                 <div>
                   <h1 className="text-xl font-bold tracking-tight text-slate-900">Artek Sales Hub</h1>
                   <p className="text-xs text-slate-500 font-medium">Master Inventory, OOR & Inspection Sheets • Whole & Split Deliveries</p>
-                  <div className="flex flex-wrap items-center gap-2 mt-1.5 text-[11px]">
+                  <div data-tour="header-actions" className="flex flex-wrap items-center gap-2 mt-1.5 text-[11px]">
                     <button
                       onClick={() => fetchData(true)}
                       disabled={refreshing}
@@ -2078,6 +2151,13 @@
                     >
                       <Info className="w-3 h-3" />
                       How to use this page
+                    </button>
+                    <button
+                      onClick={startTour}
+                      className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-blue-600 border border-blue-600 text-white font-semibold hover:bg-blue-700 transition"
+                    >
+                      <Sparkles className="w-3 h-3" />
+                      Take the tour
                     </button>
                     <span className="text-slate-500 font-medium">
                       {lastUpdated
@@ -2097,7 +2177,7 @@
                   shown, per Nathan 2026-10-28. The other KPIs are still
                   computed (Ready in Stock is used by the inventory filter)
                   but not displayed here. */}
-              <div className="flex flex-wrap items-center gap-2.5 text-xs">
+              <div data-tour="header-badges" className="flex flex-wrap items-center gap-2.5 text-xs">
                 <div className="px-3.5 py-2 rounded-xl bg-blue-50/70 border border-blue-200 text-center min-w-[115px]">
                   <span className="text-[10px] uppercase font-bold tracking-wider text-blue-600 block">Active Open Orders</span>
                   <span className="font-extrabold text-blue-700 text-sm">{kpis.backlogOrders} Backlog</span>
@@ -2112,7 +2192,7 @@
 
           {/* Navigation Bar */}
           <div className="bg-white border-b border-slate-200 px-6 sticky top-0 z-20 shadow-xs">
-            <div className="max-w-[1400px] mx-auto flex items-center overflow-x-auto gap-8 text-sm font-semibold text-slate-500 no-scrollbar">
+            <div data-tour="nav-tabs" className="max-w-[1400px] mx-auto flex items-center overflow-x-auto gap-8 text-sm font-semibold text-slate-500 no-scrollbar">
               <button
                 onClick={() => setActiveTab('leadtime')}
                 className={`py-3 flex items-center gap-2 border-b-2 transition whitespace-nowrap ${
@@ -2203,7 +2283,7 @@
                 {/* Left Column: Select Profile & Inquiry Parameters */}
                 <div className="lg:col-span-5 space-y-6">
                   {/* Select Profile Card */}
-                  <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-5">
+                  <div data-tour="leadtime-search" className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-5">
                     <div className="flex items-center justify-between mb-3">
                       <div className="flex items-center gap-2">
                         <Search className="w-4 h-4 text-blue-600" />
@@ -2325,7 +2405,7 @@
                     </div>
 
                     {/* Quantity */}
-                    <div>
+                    <div data-tour="leadtime-qty">
                       <div className="flex justify-between items-center mb-1 text-xs font-semibold">
                         <label className="text-slate-700">Requested Quantity ({selectedItem?.uom || 'FEET'})</label>
                         <span className="text-slate-400 font-normal">Required by customer</span>
@@ -2424,7 +2504,7 @@
                 </div>
 
                 {/* Right Column: Lead Time Verdict & Specs & Queues */}
-                <div className="lg:col-span-7 space-y-6">
+                <div data-tour="leadtime-result" className="lg:col-span-7 space-y-6">
                   {!calc && (
                     <div className="bg-white text-slate-700 rounded-2xl shadow-sm p-6 border border-slate-200">
                       <span className="text-[10px] font-extrabold uppercase tracking-wider bg-slate-100 px-2.5 py-0.5 rounded-full">
@@ -2750,7 +2830,7 @@
               <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
                 <div className="flex flex-col md:flex-row items-center justify-between gap-3">
                   <div className="flex items-center gap-3 w-full md:w-auto">
-                    <div className="relative flex-1 md:w-96">
+                    <div data-tour="inventory-search" className="relative flex-1 md:w-96">
                       <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
                       <input
                         type="text"
@@ -2772,7 +2852,7 @@
                 </div>
 
                 {/* Main Table */}
-                <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                <div data-tour="inventory-table" className="overflow-x-auto border border-slate-200 rounded-xl">
                   <table className="w-full text-left text-xs border-collapse">
                     <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-600 uppercase text-[10px] tracking-wider font-bold">
                       <tr>
@@ -2850,7 +2930,7 @@
               /* TAB 3: OPEN ORDERS (OOR) DATA TABLE */
               <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-5">
                 {/* Search & Profile Die Filter Row */}
-                <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+                <div data-tour="oor-search" className="flex flex-col md:flex-row items-center justify-between gap-4">
                   <div className="flex flex-wrap items-center gap-3 w-full md:w-auto flex-1">
                     <div className="relative flex-1 max-w-md">
                       <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
@@ -2897,7 +2977,7 @@
                 </div>
 
                 {/* OOR Data Table */}
-                <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                <div data-tour="oor-table" className="overflow-x-auto border border-slate-200 rounded-xl">
                   <table className="w-full text-left text-xs border-collapse">
                     <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-600 uppercase text-[10px] tracking-wider font-bold">
                       <tr>
@@ -2956,7 +3036,7 @@
             ) : activeTab === 'inspection' ? (
               /* TAB 5: INSPECTION SHEET (IN-LINE DIES) */
               <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
-                <div className="flex flex-col md:flex-row items-center justify-between gap-3">
+                <div data-tour="inspection-search" className="flex flex-col md:flex-row items-center justify-between gap-3">
                   <div className="flex flex-wrap items-center gap-3 w-full md:w-auto flex-1">
                     <div className="relative flex-1 max-w-md">
                       <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
@@ -2981,7 +3061,7 @@
                     {kpis.activeLines} of {kpis.totalLines} lines in line — resin + target rate
                   </div>
                 </div>
-                <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                <div data-tour="inspection-table" className="overflow-x-auto border border-slate-200 rounded-xl">
                   <table className="w-full text-left text-xs border-collapse">
                     <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-600 uppercase text-[10px] tracking-wider font-bold">
                       <tr>
@@ -3025,7 +3105,7 @@
               /* TAB 6: DAILY SHIPMENTS */
               dailyRange ? (
                 <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
-                  <div className="flex flex-col md:flex-row items-center justify-between gap-3">
+                  <div data-tour="daily-search" className="flex flex-col md:flex-row items-center justify-between gap-3">
                     <div className="flex flex-wrap items-center gap-3 w-full md:w-auto flex-1">
                       <div className="relative flex-1 max-w-md">
                         <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
@@ -3058,7 +3138,7 @@
                       Showing {filteredDailyShipments.length} of {dailyShipmentsList.length} shipments — newest first
                     </div>
                   </div>
-                  <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                  <div data-tour="daily-table" className="overflow-x-auto border border-slate-200 rounded-xl">
                     <table className="w-full text-left text-xs border-collapse">
                       <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-600 uppercase text-[10px] tracking-wider font-bold">
                         <tr>
@@ -3121,9 +3201,9 @@
                   <div>
                     <h3 className="text-sm font-extrabold text-slate-900">Packaging Estimator</h3>
                     <p className="text-xs text-slate-500 mt-1">Build an order line by line — each line packs with the shop's packaging rules, and the shipment totals add them up. Full Sheet lines of the same size share skids when they fit, bag lines share poly tube bags unless the whole order weighs 390 lbs or more (then they go in a crate), and crate lines share crates. Start with one line and add more as needed, up to 20. A line with missing boxes is left out of the totals until it is filled in.</p>
-                    <button onClick={() => setShowBoxList(true)} className="text-xs font-bold text-blue-600 hover:text-blue-800 underline mt-1">View available boxes</button>
+                    <button data-tour="builder-boxlist" onClick={() => setShowBoxList(true)} className="text-xs font-bold text-blue-600 hover:text-blue-800 underline mt-1">View available boxes</button>
                   </div>
-                  <div className="bg-slate-50 rounded-xl border border-slate-200 p-4">
+                  <div data-tour="builder-totals" className="bg-slate-50 rounded-xl border border-slate-200 p-4">
                     <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500 block">Shipment Totals ({builderResults.completeCount} of {builderRows.length} {builderRows.length === 1 ? 'line' : 'lines'} complete)</span>
                     <div className="mt-2 flex flex-wrap gap-x-6 gap-y-2">
                       <span className="text-sm font-extrabold text-slate-900">{builderResults.totals.material.toFixed(1)} lbs <span className="text-xs font-medium text-slate-500">material</span></span>
@@ -3169,7 +3249,7 @@
                       { key: 'qty', label: 'Qty (pcs)', placeholder: '20', value: row.qty },
                     ];
                     return (
-                      <div key={row.id} className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
+                      <div data-tour="builder-line" key={row.id} className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
                         <div className="flex items-center justify-between">
                           <span className="text-sm font-extrabold text-slate-900">Line {rIdx + 1}</span>
                           <button onClick={() => removeBuilderRow(row.id)} className="text-xs font-bold text-slate-400 hover:text-red-600">Remove</button>
@@ -3256,7 +3336,7 @@
                       ))}
                     </div>
                   )}
-                  <div className="flex items-center gap-3">
+                  <div data-tour="builder-add" className="flex items-center gap-3">
                     {builderRows.length < 20 ? (
                       <button onClick={addBuilderRow} className="px-4 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl">+ Add line item</button>
                     ) : (
@@ -3277,7 +3357,7 @@
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
                   {/* Left Column: Select Sheet & Quantity */}
                   <div className="lg:col-span-5 space-y-6">
-                    <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-5">
+                    <div data-tour="fullsheet-search" className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-5">
                       <div className="flex items-center justify-between mb-3">
                         <div className="flex items-center gap-2">
                           <Search className="w-4 h-4 text-blue-600" />
@@ -3422,7 +3502,7 @@
                     </div>
                   </div>
                   {/* Right Column: Lead Time Result */}
-                  <div className="lg:col-span-7 space-y-6">
+                  <div data-tour="fullsheet-result" className="lg:col-span-7 space-y-6">
                     {!selectedFs ? (
                       <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center">
                         <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-3">
@@ -3606,6 +3686,59 @@
                       Calculate Lead Time for this SKU
                     </button>
                     <button onClick={() => setOorModalItem(null)} className="px-4 py-2 bg-slate-900 text-white rounded-lg text-xs font-semibold hover:bg-slate-700 transition">Close</button>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+          {/* Guided tour overlay: a dimming cutout spotlight over the
+              current step's data-tour target, plus a card with Back /
+              Next / End tour. The backdrop blocks page clicks while the
+              tour runs; Escape also ends it. When a target is not on
+              screen, the card centres itself instead of pointing nowhere. */}
+          {tourActive && TOUR_STEPS[tourStep] && (() => {
+            const step = TOUR_STEPS[tourStep];
+            const vw = typeof window !== 'undefined' ? window.innerWidth : 1024;
+            const vh = typeof window !== 'undefined' ? window.innerHeight : 800;
+            const below = tourRect && (tourRect.top + tourRect.height + 210 < vh);
+            const tipTop = tourRect ? (below ? tourRect.top + tourRect.height + 16 : Math.max(12, tourRect.top - 210)) : 80;
+            const tipLeft = tourRect ? Math.max(12, Math.min(tourRect.left, vw - 332)) : 0;
+            return (
+              <div>
+                <div className="fixed inset-0 z-[65]" onClick={(e) => e.stopPropagation()} />
+                {tourRect && (
+                  <div
+                    className="fixed z-[70] border-[3px] border-blue-600 rounded-xl pointer-events-none"
+                    style={{ top: tourRect.top - 6, left: tourRect.left - 6, width: tourRect.width + 12, height: tourRect.height + 12, boxShadow: '0 0 0 9999px rgba(15, 23, 42, 0.65)' }}
+                  />
+                )}
+                <div
+                  className="fixed z-[80] bg-white rounded-2xl shadow-xl border border-slate-200 p-4 w-[320px] max-w-[calc(100vw-24px)]"
+                  style={tourRect ? { top: tipTop, left: tipLeft } : { top: 80, left: '50%', transform: 'translateX(-50%)' }}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <h3 className="text-sm font-extrabold text-slate-900">{step.title}</h3>
+                    <button onClick={endTour} className="text-xs font-bold text-slate-400 hover:text-red-600 shrink-0">End tour</button>
+                  </div>
+                  <p className="text-[11px] font-bold text-blue-600 mt-0.5">Step {tourStep + 1} of {TOUR_STEPS.length} • {PAGE_HELP[step.tab] ? PAGE_HELP[step.tab].title : step.tab}</p>
+                  <p className="text-xs font-medium text-slate-700 mt-2 leading-relaxed">{step.text}</p>
+                  {!tourRect && (
+                    <p className="text-[11px] font-medium text-amber-700 mt-2">That section is not on screen right now — use Next to keep going.</p>
+                  )}
+                  <div className="flex items-center justify-between mt-4">
+                    <button
+                      onClick={() => setTourStep((s) => Math.max(0, s - 1))}
+                      disabled={tourStep === 0}
+                      className="px-3 py-1.5 text-xs font-bold rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 disabled:opacity-40 transition"
+                    >
+                      Back
+                    </button>
+                    <button
+                      onClick={() => { if (tourStep < TOUR_STEPS.length - 1) setTourStep((s) => s + 1); else endTour(); }}
+                      className="px-3 py-1.5 text-xs font-bold rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition"
+                    >
+                      {tourStep < TOUR_STEPS.length - 1 ? 'Next' : 'Finish'}
+                    </button>
                   </div>
                 </div>
               </div>
