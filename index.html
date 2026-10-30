@@ -3510,8 +3510,14 @@
               </div>
             </div>
           )}
-          {/* Order Card Modal: opened by clicking any SO number. */}
+          {/* Order Card Modal: opened by clicking any SO number; shows
+              every line on the order, with the clicked line's full details
+              below. Clicking a line in the table selects it. */}
           {selectedOrder && (() => {
+            const orderLines = openOrdersList.filter(o => o.soNum === selectedOrder.soNum);
+            const orderTotalWeight = orderLines.some(o => o.totalWeight != null)
+              ? orderLines.reduce((sum, o) => sum + (o.totalWeight || 0), 0)
+              : null;
             const stockItem = inventoryList.find(i =>
               i.partNumber.toUpperCase() === selectedOrder.newPartNum.toUpperCase()
               || i.partNumber.toUpperCase() === selectedOrder.itemPart.toUpperCase());
@@ -3557,6 +3563,44 @@
                       <div><span className="text-slate-500 block">Ship Via / Method</span><span className="font-bold text-slate-900">{selectedOrder.shipVia || '—'}</span></div>
                     </div>
                     <div className="text-xs"><span className="text-slate-500 block">Ship To Address</span><span className="font-medium text-slate-900 whitespace-pre-line">{selectedOrder.shipTo || '—'}</span></div>
+                  </div>
+
+                  <div className="bg-slate-50 rounded-xl border border-slate-200 p-4 space-y-3">
+                    <h3 className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">Order Lines ({orderLines.length}) — click a line to view its details</h3>
+                    <div className="overflow-x-auto border border-slate-200 rounded-xl bg-white">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-600 uppercase text-[10px] tracking-wider font-bold">
+                          <tr>
+                            <th className="py-2 px-3">Part</th>
+                            <th className="py-2 px-3 text-right">Qty</th>
+                            <th className="py-2 px-3">Die</th>
+                            <th className="py-2 px-3">Promised</th>
+                            <th className="py-2 px-3">Status</th>
+                            <th className="py-2 px-3 text-right">Weight</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                          {orderLines.map((o) => (
+                            <tr key={o.id} onClick={() => setSelectedOrder(o)} className={`cursor-pointer hover:bg-blue-50/60 transition ${o.id === selectedOrder.id ? 'bg-blue-50' : ''}`}>
+                              <td className="py-2 px-3">
+                                <span className="font-bold text-slate-900">{o.newPartNum || o.itemPart}</span>
+                                {o.id === selectedOrder.id && <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-bold bg-blue-600 text-white">SELECTED</span>}
+                                {o.description && <span className="block text-slate-500 max-w-xs truncate" title={o.description}>{o.description}</span>}
+                              </td>
+                              <td className="py-2 px-3 text-right font-mono">{o.qty.toLocaleString()} {o.uom}</td>
+                              <td className="py-2 px-3">{o.profileDie}</td>
+                              <td className="py-2 px-3">{o.promiseDate}</td>
+                              <td className="py-2 px-3">{o.status === 'Scheduled' ? 'Scheduled in Queue' : o.status}</td>
+                              <td className="py-2 px-3 text-right font-mono">{o.totalWeight != null ? `${o.totalWeight.toLocaleString()} lbs` : '—'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <p className="text-xs font-semibold text-slate-800">
+                      Order total: {orderLines.length} {orderLines.length === 1 ? 'line' : 'lines'}
+                      {orderTotalWeight != null && ` • ${orderTotalWeight.toLocaleString()} lbs`}
+                    </p>
                   </div>
 
                   <div className="bg-slate-50 rounded-xl border border-slate-200 p-4 space-y-3">
