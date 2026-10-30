@@ -656,26 +656,18 @@
       const [fsSearchQuery, setFsSearchQuery] = useState('');
       const [selectedFsId, setSelectedFsId] = useState(null);
       const [fsQty, setFsQty] = useState(10);
-      // Packaging estimator inputs (same columns as the Packaging Tool
-      // sheet: material type, dimensions, qty, total weight).
-      const [pkgMaterial, setPkgMaterial] = useState('Flat Bar');
-      const [pkgLength, setPkgLength] = useState('');
-      const [pkgWidth, setPkgWidth] = useState('');
-      const [pkgHeight, setPkgHeight] = useState('');
-      const [pkgThickness, setPkgThickness] = useState('');
-      const [pkgDiameter, setPkgDiameter] = useState('');
-      const [pkgWall, setPkgWall] = useState('');
-      const [pkgLeg1, setPkgLeg1] = useState('');
-      const [pkgLeg2, setPkgLeg2] = useState('');
-      const [pkgQty, setPkgQty] = useState('');
-      // Order Builder rows: each row is one line item, with the same
-      // fields as the single-item Packaging estimator. The tab opens
-      // with one row; "Add line item" appends up to 20, and "Clear
-      // all lines" resets to that one blank row.
+      // Order Builder rows: each row is one line item, with the
+      // packaging dimensions and quantity. The tab opens with one
+      // row; "Add line item" appends up to 20, and "Clear all
+      // lines" resets to that one blank row.
       const [builderRows, setBuilderRows] = useState([
         { id: 1, material: 'Flat Bar', length: '', width: '', height: '', thickness: '', diameter: '', wall: '', leg1: '', leg2: '', qty: '' },
       ]);
       const [builderNextId, setBuilderNextId] = useState(2);
+      // Box list modal on the Order Builder tab: the box sizes from
+      // the Packaging Tool Settings tab, kept available as a link
+      // now that the single-item Packaging tab is gone.
+      const [showBoxList, setShowBoxList] = useState(false);
       // Order card modal: set to an order from openOrdersList when its
       // SO number is clicked, anywhere order numbers appear.
       const [selectedOrder, setSelectedOrder] = useState(null);
@@ -1197,51 +1189,6 @@
           return 0;
         });
       }, [dailyShipmentsList, dailySearchQuery, dailyDateFilter]);
-
-      // Packaging estimator result: recomputed live as the form changes,
-      // the way the sheet's formulas recalculate. Package type follows
-      // the sheet's language: over 400 lbs is a Crate, otherwise length
-      // 60" or under is a Box, otherwise a Poly Bag. Nothing is shown
-      // until every box required for the selected material is filled in,
-      // so a defaulted dimension can never silently stand in for a real one.
-      const pkgRequired = PKG_REQUIRED_FIELDS[pkgMaterial] || [];
-      const pkgValues = { length: pkgLength, width: pkgWidth, height: pkgHeight, thickness: pkgThickness, diameter: pkgDiameter, wall: pkgWall, leg1: pkgLeg1, leg2: pkgLeg2, qty: pkgQty };
-      const pkgMissing = pkgRequired.filter((k) => {
-        const v = pkgValues[k];
-        const n = parseFloat(v);
-        return v === '' || v == null || isNaN(n) || n <= 0;
-      });
-      const pkgFields = [
-        { key: 'length', label: 'Length (in)', placeholder: '120', value: pkgLength, set: setPkgLength },
-        { key: 'width', label: 'Width (in)', placeholder: pkgMaterial === 'Full Sheet' ? '48' : '2', value: pkgWidth, set: setPkgWidth },
-        { key: 'height', label: 'Height (in)', placeholder: '1', value: pkgHeight, set: setPkgHeight },
-        { key: 'thickness', label: 'Thickness (in)', placeholder: '0.5', value: pkgThickness, set: setPkgThickness },
-        { key: 'diameter', label: 'Diameter (in)', placeholder: '1', value: pkgDiameter, set: setPkgDiameter },
-        { key: 'wall', label: 'Wall Thickness (in)', placeholder: '0.25', value: pkgWall, set: setPkgWall },
-        { key: 'leg1', label: 'Leg 1 (in)', placeholder: '3', value: pkgLeg1, set: setPkgLeg1 },
-        { key: 'leg2', label: 'Leg 2 (in)', placeholder: '3', value: pkgLeg2, set: setPkgLeg2 },
-        { key: 'qty', label: 'Qty (pcs)', placeholder: '20', value: pkgQty, set: setPkgQty },
-      ];
-      const pkgNum = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
-      const pkgTubeWallInvalid = pkgMaterial === 'Tube' && pkgNum(pkgDiameter) > 0 && pkgNum(pkgWall) > 0 && pkgNum(pkgWall) >= pkgNum(pkgDiameter) / 2;
-      const pkgResult = useMemo(() => {
-        if (pkgMissing.length > 0 || pkgTubeWallInvalid) return null;
-        const num = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
-        const length = num(pkgLength), qty = num(pkgQty);
-        const weight = estimatePkgWeight(pkgMaterial, length, num(pkgWidth), num(pkgHeight), num(pkgThickness), num(pkgDiameter), num(pkgLeg1), num(pkgLeg2), qty, num(pkgWall));
-        if (!qty || qty <= 0 || !weight || weight <= 0 || !length || length <= 0) return null;
-        if (pkgMaterial === 'Full Sheet') {
-          const skid = estimateSkid(length, num(pkgWidth), num(pkgThickness), qty, weight);
-          if (!skid) return null;
-          return { packing: skid.packing, suggested: 'N/A', dims: skid.dims, containerType: 'Skid', weight };
-        }
-        const packing = estimatePacking(pkgMaterial, length, num(pkgWidth), num(pkgHeight), num(pkgThickness), num(pkgDiameter), num(pkgLeg1), num(pkgLeg2), qty, weight, crateCountLookup);
-        if (!packing) return null;
-        const suggested = estimateSuggestedBox(pkgMaterial, length, num(pkgWidth), num(pkgHeight), num(pkgThickness), num(pkgDiameter), num(pkgLeg1), num(pkgLeg2), qty, weight, packing, PACKAGING_BOXES);
-        const dims = estimateDims(pkgMaterial, length, num(pkgWidth), num(pkgHeight), num(pkgThickness), num(pkgDiameter), num(pkgLeg1), num(pkgLeg2), qty, weight, packing, PACKAGING_BOXES);
-        const containerType = (weight > 400 || (weight >= 390 && length > 60)) ? 'Crate' : (length <= 60 ? 'Box' : 'Poly Bag');
-        return { packing, suggested, dims, containerType, weight };
-      }, [pkgMaterial, pkgLength, pkgWidth, pkgHeight, pkgThickness, pkgDiameter, pkgWall, pkgLeg1, pkgLeg2, pkgQty, crateCountLookup]);
 
       // Order Builder: each row packs with the same functions as the
       // single-item estimator, except Full Sheet lines of the same
@@ -2074,17 +2021,6 @@
               >
                 <Activity className="w-4 h-4" />
                 Inspection Sheet (In-Line Dies)
-              </button>
-              <button
-                onClick={() => setActiveTab('packaging')}
-                className={`py-3 flex items-center gap-2 border-b-2 transition whitespace-nowrap ${
-                  activeTab === 'packaging'
-                    ? 'border-blue-600 text-blue-600 font-bold'
-                    : 'border-transparent hover:text-slate-700'
-                }`}
-              >
-                <Package className="w-4 h-4" />
-                Packaging
               </button>
               <button
                 onClick={() => setActiveTab('builder')}
@@ -3045,98 +2981,14 @@
                   </button>
                 </div>
               )
-            ) : activeTab === 'packaging' ? (
-              /* TAB 7: PACKAGING ESTIMATOR (Packaging Tool sheet) */
-              <div className="space-y-6">
-                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-5">
-                  <div>
-                    <h3 className="text-sm font-extrabold text-slate-900">Packaging Estimator</h3>
-                    <p className="text-xs text-slate-500 mt-1">Same calculation as the Packaging Tool sheet — enter the dimensions and quantity and the weight is calculated from them, then the packing plan. Tubes also ask for wall thickness so their weight is exact, not a solid-round estimate. Full Sheets follow the shop skid rules instead: the per-thickness skid table, at most 12" of material on a 4" skid, plus the skid's own weight. The boxes you need for the selected material are highlighted in blue; the rest are dimmed and can stay blank.</p>
-                  </div>
-                  <p className="text-xs font-semibold text-blue-700">For {pkgMaterial}, fill in: {pkgRequired.map((k) => PKG_FIELD_LABELS[k]).join(', ')}.</p>
-                  <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                    <label className="block">
-                      <span className="text-[10px] uppercase font-bold tracking-wider text-blue-700">Material Type *</span>
-                      <select value={pkgMaterial} onChange={e => setPkgMaterial(e.target.value)} className="mt-1 w-full px-3 py-2 text-xs bg-white border border-blue-300 ring-1 ring-blue-100 rounded-xl font-medium text-slate-900">
-                        <option value="Flat Bar">Flat Bar</option>
-                        <option value="Rod">Rod</option>
-                        <option value="Tube">Tube</option>
-                        <option value="Angle">Angle</option>
-                        <option value="Channel">Channel</option>
-                        <option value="Full Sheet">Full Sheet</option>
-                      </select>
-                    </label>
-                    {pkgFields.map((f) => {
-                      const required = pkgRequired.includes(f.key);
-                      return (
-                        <label key={f.key} className="block">
-                          <span className={`text-[10px] uppercase font-bold tracking-wider ${required ? 'text-blue-700' : 'text-slate-400'}`}>{f.label}{required ? ' *' : ''}</span>
-                          <input type="number" min="0" step="any" value={f.value} onChange={e => f.set(e.target.value)} placeholder={f.placeholder} className={`mt-1 w-full px-3 py-2 text-xs border rounded-xl font-medium ${required ? 'bg-white border-blue-300 ring-1 ring-blue-100 text-slate-900' : 'bg-slate-50 border-slate-200 text-slate-500'}`} />
-                        </label>
-                      );
-                    })}
-                  </div>
-                  {pkgResult ? (
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      <div className="bg-slate-50 rounded-xl border border-slate-200 p-4">
-                        <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500 block">Estimated Total Weight</span>
-                        <span className="text-base font-extrabold text-slate-900">{pkgResult.weight.toFixed(1)} lbs</span>
-                        <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500 block mt-4">Package Type</span>
-                        <span className="text-base font-extrabold text-slate-900">{pkgResult.containerType}</span>
-                        <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500 block mt-4">Suggested Box</span>
-                        <span className="text-xs font-semibold text-slate-800 whitespace-pre-line">{pkgResult.suggested}</span>
-                      </div>
-                      <div className="bg-slate-50 rounded-xl border border-slate-200 p-4">
-                        <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500 block">Estimated Packing</span>
-                        <span className="text-xs font-semibold text-slate-800 whitespace-pre-line">{pkgResult.packing}</span>
-                      </div>
-                      <div className="bg-slate-50 rounded-xl border border-slate-200 p-4">
-                        <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500 block">Estimated Dimensions</span>
-                        <span className="text-xs font-semibold text-slate-800 whitespace-pre-line">{pkgResult.dims || '—'}</span>
-                      </div>
-                    </div>
-                  ) : pkgTubeWallInvalid ? (
-                    <p className="text-xs font-semibold text-amber-600">Wall thickness must be less than half the diameter — otherwise there is no hollow center left.</p>
-                  ) : (
-                    <p className="text-xs text-slate-500 font-medium">{pkgMissing.length > 0 ? (<>Still needed for {pkgMaterial}: <span className="font-bold text-blue-700">{pkgMissing.map((k) => PKG_FIELD_LABELS[k]).join(', ')}</span></>) : 'Enter the required boxes to see the packing plan.'}</p>
-                  )}
-                  <p className="text-[11px] text-slate-400">Weight is calculated at 0.0345 lb/in&#179; (UHMW), the same factor as the sheet, from length, cross-section and quantity. Rules match the sheet: over 400 lbs goes in a crate (1,960 lbs of material max, 140 lbs tare per crate), 60&quot; or under goes in a box (60 lbs max), otherwise a poly bag (150 lbs max) — except a bag-bound load at 390 lbs or more goes in a crate instead of bags. Crate dimensions are fixed at 125&quot; x 29&quot; x 33&quot;. When the Crate Count page is in the feed, pieces per crate come from that page instead of the grid math. Full Sheets go on skids: at most the table quantity for the thickness and 12&quot; of material on a 4&quot; skid (16&quot; combined height); a 4x10 skid weighs 100 lbs and a 4x8 skid 85 lbs, added to each skid's weight.</p>
-                </div>
-                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-3">
-                  <h3 className="text-sm font-extrabold text-slate-900">Box Settings (from the Packaging Tool Settings tab)</h3>
-                  <div className="overflow-x-auto border border-slate-200 rounded-xl">
-                    <table className="w-full text-left text-xs border-collapse">
-                      <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-600 uppercase text-[10px] tracking-wider font-bold">
-                        <tr>
-                          <th className="py-2.5 px-3">Box Name</th>
-                          <th className="py-2.5 px-3 text-right">Length</th>
-                          <th className="py-2.5 px-3 text-right">Width</th>
-                          <th className="py-2.5 px-3 text-right">Height</th>
-                          <th className="py-2.5 px-3 text-right">Volume</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
-                        {PACKAGING_BOXES.map((b) => (
-                          <tr key={b[0]} className="hover:bg-blue-50/40 transition">
-                            <td className="py-2 px-3 font-bold text-slate-900">{b[0]}</td>
-                            <td className="py-2 px-3 text-right">{b[1]}</td>
-                            <td className="py-2 px-3 text-right">{b[2]}</td>
-                            <td className="py-2 px-3 text-right">{b[3]}</td>
-                            <td className="py-2 px-3 text-right text-slate-500">{b[4].toLocaleString()}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </div>
             ) : activeTab === 'builder' ? (
               /* TAB: ORDER BUILDER — multi-line packaging estimates */
               <div className="space-y-6">
                 <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-5">
                   <div>
                     <h3 className="text-sm font-extrabold text-slate-900">Order Builder</h3>
-                    <p className="text-xs text-slate-500 mt-1">Build an order line by line — each line packs with the same rules as the Packaging estimator, and the shipment totals add them up. Full Sheet lines of the same size share skids when they fit, bag lines share poly tube bags unless the whole order weighs 390 lbs or more (then they go in a crate), and crate lines share crates. Start with one line and add more as needed, up to 20. A line with missing boxes is left out of the totals until it is filled in.</p>
+                    <p className="text-xs text-slate-500 mt-1">Build an order line by line — each line packs with the shop's packaging rules, and the shipment totals add them up. Full Sheet lines of the same size share skids when they fit, bag lines share poly tube bags unless the whole order weighs 390 lbs or more (then they go in a crate), and crate lines share crates. Start with one line and add more as needed, up to 20. A line with missing boxes is left out of the totals until it is filled in.</p>
+                    <button onClick={() => setShowBoxList(true)} className="text-xs font-bold text-blue-600 hover:text-blue-800 underline mt-1">View available boxes</button>
                   </div>
                   <div className="bg-slate-50 rounded-xl border border-slate-200 p-4">
                     <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500 block">Shipment Totals ({builderResults.completeCount} of {builderRows.length} {builderRows.length === 1 ? 'line' : 'lines'} complete)</span>
@@ -3626,6 +3478,49 @@
               </div>
             );
           })()}
+          {/* Box List Modal: the box sizes from the Packaging Tool
+              Settings tab, opened from the Order Builder link. */}
+          {showBoxList && (
+            <div
+              className="fixed inset-0 bg-black/50 flex items-start justify-center p-4 pt-10 z-[60] overflow-y-auto"
+              onClick={() => setShowBoxList(false)}
+            >
+              <div
+                className="bg-white rounded-2xl shadow-xl max-w-2xl w-full p-6 space-y-4"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="flex items-start justify-between border-b border-slate-200 pb-4">
+                  <h2 className="text-lg font-extrabold text-slate-900">Available Boxes</h2>
+                  <button onClick={() => setShowBoxList(false)} className="text-xs font-bold text-slate-400 hover:text-red-600">Close</button>
+                </div>
+                <p className="text-xs text-slate-500">Box sizes from the Packaging Tool Settings tab. The suggested box for each line is shown on its line card.</p>
+                <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-600 uppercase text-[10px] tracking-wider font-bold">
+                      <tr>
+                        <th className="py-2.5 px-3">Box Name</th>
+                        <th className="py-2.5 px-3 text-right">Length</th>
+                        <th className="py-2.5 px-3 text-right">Width</th>
+                        <th className="py-2.5 px-3 text-right">Height</th>
+                        <th className="py-2.5 px-3 text-right">Volume</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                      {PACKAGING_BOXES.map((b) => (
+                        <tr key={b[0]} className="hover:bg-blue-50/40 transition">
+                          <td className="py-2 px-3 font-bold text-slate-900">{b[0]}</td>
+                          <td className="py-2 px-3 text-right">{b[1]}</td>
+                          <td className="py-2 px-3 text-right">{b[2]}</td>
+                          <td className="py-2 px-3 text-right">{b[3]}</td>
+                          <td className="py-2 px-3 text-right text-slate-500">{b[4].toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
           {/* Order Card Modal: opened by clicking any SO number. */}
           {selectedOrder && (() => {
             const stockItem = inventoryList.find(i =>
