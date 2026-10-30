@@ -754,8 +754,8 @@
       { tab: 'leadtime', target: 'header-actions', title: 'Refresh and help', text: 'Refresh data reloads the feed right now (it also refreshes on its own every 30 minutes). How to use this page is the quick written reference; Take the tour is this walkthrough.' },
       { tab: 'leadtime', target: 'nav-tabs', title: 'The seven tabs', text: 'Everything lives under these tabs. The tour walks them in order, switching tabs for you, and you can end it at any time.' },
       { tab: 'leadtime', target: 'leadtime-search', title: 'Pick a part', text: 'Search by part number, die, or description, then pick from the top 10 matches. Each match shows stock on hand and its die.' },
-      { tab: 'leadtime', target: 'leadtime-qty', title: 'Enter a quantity', text: 'Enter a quantity in feet, or tap a quick button (500, 2k, 5k). Nothing is quoted until a part and a quantity over zero are both entered.' },
-      { tab: 'leadtime', target: 'leadtime-result', title: 'Read the verdict', text: 'This panel turns green when the order is fully in stock (1-2 business days) or yellow when production is needed, with the stock coverage, the die queue ahead of it, and a ready date.' },
+      { tab: 'leadtime', target: 'leadtime-qty', title: 'Enter a quantity', text: 'Enter a quantity in feet, or tap a quick button (500, 2k, 5k). Nothing is quoted until a part and a quantity over zero are both entered. On the next step, the tour loads an example quantity so you can see a finished verdict.' },
+      { tab: 'leadtime', target: 'leadtime-result', title: 'Read the verdict', text: 'The tour has loaded an example here at 1,000 feet, fully covered by stock on hand, so this panel turns green with a 1-2 business day verdict, showing stock coverage, the die queue ahead of it, and a ready date. Use the button below to see a production example instead — a quantity over stock, which turns the panel yellow with setup and run time.' },
       { tab: 'fullsheet', target: 'fullsheet-search', title: 'Pick a full sheet', text: 'Search by FS- part number or description, then pick from the top 10 matches. Each shows sheets on hand and its billet family.' },
       { tab: 'fullsheet', target: 'fullsheet-result', title: 'Read the full-sheet verdict', text: 'Finished stock covers the order first. Any shortfall plus the queue ahead of it comes out of billets, with extrusion time, a fixed 14 days to turn billets into finished sheets, and a 2-day changeover when that billet family and color is not already running.' },
       { tab: 'inventory', target: 'inventory-search', title: 'Search the stock list', text: 'Search by part number, description, or bin location, and use the dropdown to narrow to In Stock Only.' },
@@ -841,20 +841,56 @@
       const [tourActive, setTourActive] = useState(false);
       const [tourStep, setTourStep] = useState(0);
       const [tourRect, setTourRect] = useState(null);
+      // Tour example: the tour saves the user's own Lead Time part
+      // and quantity when it starts, loads an example at the verdict
+      // step, and restores the saved inquiry when the tour ends or
+      // leaves Lead Time, so a demo never overwrites a real quote.
+      const [tourSavedInquiry, setTourSavedInquiry] = useState(null);
+      const [tourExampleQty, setTourExampleQty] = useState(null);
       const startTour = () => {
         setShowPageHelp(false);
         setShowBoxList(false);
         setSelectedOrder(null);
         setOorModalItem(null);
+        setTourSavedInquiry({ partId: selectedPartId, qty: inquiredQty });
+        setTourExampleQty(null);
         setTourStep(0);
         setTourActive(true);
       };
-      const endTour = () => { setTourActive(false); setTourRect(null); };
+      const endTour = () => {
+        if (tourSavedInquiry) {
+          setSelectedPartId(tourSavedInquiry.partId);
+          setInquiredQty(tourSavedInquiry.qty);
+          setTourSavedInquiry(null);
+        }
+        setTourExampleQty(null);
+        setTourActive(false);
+        setTourRect(null);
+      };
+      const tourExamplePart = () => {
+        const list = inventoryList || [];
+        return list.find((i) => i.partNumber === 'AG-405VBK042-120') || list.find((i) => (i.partNumber || '').includes('AG-405')) || list[0] || null;
+      };
+      const loadTourExample = (qty) => {
+        const part = tourExamplePart();
+        if (!part) return;
+        setSelectedPartId(part.id);
+        setInquiredQty(String(qty));
+        setTourExampleQty(String(qty));
+      };
       useEffect(() => {
         if (!tourActive) return;
         const step = TOUR_STEPS[tourStep];
         if (!step) return;
         if (activeTab !== step.tab) { setTourRect(null); setActiveTab(step.tab); return; }
+        if (step.target === 'leadtime-result' && tourExampleQty === null) {
+          const part = tourExamplePart();
+          if (part) { setSelectedPartId(part.id); setInquiredQty('1000'); setTourExampleQty('1000'); }
+        } else if (step.tab !== 'leadtime' && tourExampleQty !== null && tourSavedInquiry) {
+          setSelectedPartId(tourSavedInquiry.partId);
+          setInquiredQty(tourSavedInquiry.qty);
+          setTourExampleQty(null);
+        }
         let cancelled = false;
         const measure = () => {
           const el = document.querySelector('[data-tour="' + step.target + '"]');
@@ -877,7 +913,7 @@
         window.addEventListener('resize', onResize);
         window.addEventListener('keydown', onKey);
         return () => { cancelled = true; window.removeEventListener('resize', onResize); window.removeEventListener('keydown', onKey); };
-      }, [tourActive, tourStep, activeTab]);
+      }, [tourActive, tourStep, activeTab, tourExampleQty, tourSavedInquiry]);
       // Order card modal: set to an order from openOrdersList when its
       // SO number is clicked, anywhere order numbers appear.
       const [selectedOrder, setSelectedOrder] = useState(null);
@@ -3700,8 +3736,8 @@
             const step = TOUR_STEPS[tourStep];
             const vw = typeof window !== 'undefined' ? window.innerWidth : 1024;
             const vh = typeof window !== 'undefined' ? window.innerHeight : 800;
-            const below = tourRect && (tourRect.top + tourRect.height + 210 < vh);
-            const tipTop = tourRect ? (below ? tourRect.top + tourRect.height + 16 : Math.max(12, tourRect.top - 210)) : 80;
+            const below = tourRect && (tourRect.top + tourRect.height + 260 < vh);
+            const tipTop = tourRect ? (below ? tourRect.top + tourRect.height + 16 : Math.max(12, tourRect.top - 260)) : 80;
             const tipLeft = tourRect ? Math.max(12, Math.min(tourRect.left, vw - 332)) : 0;
             return (
               <div>
@@ -3722,6 +3758,17 @@
                   </div>
                   <p className="text-[11px] font-bold text-blue-600 mt-0.5">Step {tourStep + 1} of {TOUR_STEPS.length} • {PAGE_HELP[step.tab] ? PAGE_HELP[step.tab].title : step.tab}</p>
                   <p className="text-xs font-medium text-slate-700 mt-2 leading-relaxed">{step.text}</p>
+                  {step.target === 'leadtime-result' && tourExampleQty && (
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <span className="text-[11px] font-bold text-slate-500">Example: {selectedItem ? selectedItem.partNumber : '—'} • {inquiredQty} feet</span>
+                      <button
+                        onClick={() => loadTourExample(tourExampleQty === '5000' ? 1000 : 5000)}
+                        className="px-2.5 py-1.5 text-xs font-bold rounded-lg bg-blue-50 border border-blue-200 text-blue-700 hover:bg-blue-100 transition"
+                      >
+                        {tourExampleQty === '5000' ? 'Show in-stock example' : 'Show production example'}
+                      </button>
+                    </div>
+                  )}
                   {!tourRect && (
                     <p className="text-[11px] font-medium text-amber-700 mt-2">That section is not on screen right now — use Next to keep going.</p>
                   )}
