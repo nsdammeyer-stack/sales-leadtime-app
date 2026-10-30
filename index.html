@@ -607,6 +607,141 @@
       return 0.0345 * length * area * qty;
     }
 
+    // Page help: what each tab shows, what is clickable, and what
+    // information it gives. Opened from the "How to use this page"
+    // link in the header; the content follows the active tab.
+    const PAGE_HELP = {
+      leadtime: {
+        title: 'Lead Time Calculator',
+        sections: [
+          { heading: 'What you see', bullets: [
+            'A part picker on the left and a lead-time verdict on the right.',
+            'The verdict shows whether the order ships from stock or needs production, how much of your quantity stock covers, the die queue ahead of it, and a ready date.',
+          ] },
+          { heading: 'What you can click', bullets: [
+            'Search by part number, die, or description, then pick from the top 10 matches — each shows stock on hand and its die.',
+            'Enter a quantity in feet, or tap a quick quantity button, then Reset to start over.',
+            'View Stock jumps to that part in Inventory. The trash icon clears the selected part.',
+            'Quote buttons on the Inventory tab and Load into Lead Time Calculator on an order card also drop a part and quantity in here.',
+          ] },
+          { heading: 'What you can learn', bullets: [
+            'In stock (100% covered) means 1–2 business days.',
+            'A die running on a line means continuous production plus freight. A die not running adds a 10-day setup first, then the run plus freight. Rush shortens those additions.',
+            "The panel also shows the part's last audit date and its primary bin.",
+          ] },
+        ],
+      },
+      fullsheet: {
+        title: 'Full Sheet Calculator',
+        sections: [
+          { heading: 'What you see', bullets: [
+            'Full-sheet parts (FS- numbers) with finished stock, the open-order queue for that thickness and color, billet stock, and a ready date.',
+            'A table of the full-sheet lines running right now.',
+          ] },
+          { heading: 'What you can click', bullets: [
+            'Search by part number or description, then pick from the top 10 matches — each shows sheets on hand and its billet family.',
+            'Enter a quantity in sheets (EACH). The trash icon clears the selected sheet.',
+          ] },
+          { heading: 'What you can learn', bullets: [
+            'Finished stock covers the order first; any shortfall plus the queue ahead of it comes out of billets.',
+            "When billets must be extruded, the quote adds extrusion time at the family's measured rate, a fixed 14 days to turn billets into finished sheets (skive, curtain room, squaring, planing), and a 2-day changeover when that billet family and color isn't already running.",
+            'Work in progress is not counted, so quotes are conservative by that amount.',
+          ] },
+        ],
+      },
+      inventory: {
+        title: 'Inventory Stock (Sales 2.0)',
+        sections: [
+          { heading: 'What you see', bullets: [
+            'Every Sales 2.0 row: part number, description, unit of measure, length, quantity available, quantity on order, primary bin, and last audit date.',
+          ] },
+          { heading: 'What you can click', bullets: [
+            'Search by part number, description, or bin location.',
+            'The dropdown filters to In Stock Only.',
+            'A quantity-on-order number opens the open orders calling for that part family.',
+            'Quote loads the part into the Lead Time Calculator.',
+            'Show all / Show first 50 controls how many rows draw at once (first 50 by default).',
+          ] },
+          { heading: 'What you can learn', bullets: [
+            'Quantity available is net of quantity on order — what is physically on hand is available plus on order.',
+            'Last Audit is the date from column G of Sales 2.0.',
+            'The bin shown is the primary bin (Loc 1).',
+          ] },
+        ],
+      },
+      oor: {
+        title: 'Open Orders (OOR)',
+        sections: [
+          { heading: 'What you see', bullets: [
+            'Open order lines from OOR, earliest promised date first: SO number, customer, part, quantity, die, promised date, and packaging status.',
+          ] },
+          { heading: 'What you can click', bullets: [
+            'Search by SO number, customer, part, PO, or date.',
+            'The date picker shows only orders promised on that date (× Clear date removes it).',
+            'The die dropdown narrows to one profile die.',
+            'Clicking an SO number opens the order card with every line on that order.',
+          ] },
+          { heading: 'What you can learn', bullets: [
+            'Each row is one line of an order — an order with three parts appears three times.',
+            'Quantities are what is still remaining on each line.',
+            'Status comes from the shipped, packaged, boxed, and hold columns: Scheduled, Packaged, Boxed, Shipped, or On Hold.',
+          ] },
+        ],
+      },
+      inspection: {
+        title: 'Inspection Sheet (In-Line Dies)',
+        sections: [
+          { heading: 'What you see', bullets: [
+            'Every plant line from the Inspection Sheet: line number, part, die, resin, color, measured and target rates, and whether the line is in line.',
+          ] },
+          { heading: 'What you can click', bullets: [
+            'Search by line number, part, die, resin, or color.',
+            'The dropdown switches between All Lines and In-Line Only.',
+          ] },
+          { heading: 'What you can learn', bullets: [
+            'A line counts as in line when it has a resin and a numeric target rate.',
+            'In-line dies skip the 10-day setup in lead-time quotes; dies not in line carry the full setup.',
+            'Measured rates are usually blank on this sheet — the target rate is what the calculators use.',
+          ] },
+        ],
+      },
+      builder: {
+        title: 'Packaging Estimator',
+        sections: [
+          { heading: 'What you see', bullets: [
+            "One row per line item, each packing with the shop's rules, plus shipment totals at the top and Skid, Bag, and Crate plan sections at the bottom.",
+          ] },
+          { heading: 'What you can click', bullets: [
+            'Start with one line and Add line item up to 20; Remove drops a row and Clear all lines resets to one blank row.',
+            'Fill in the blue required boxes for each material — tubes need wall thickness, angles need thickness.',
+            'View available boxes opens the 16-box list.',
+          ] },
+          { heading: 'What you can learn', bullets: [
+            'Full Sheet lines of the same size share skids (table quantity per skid, at most 12 inches of material on a 4-inch skid), and a line that fits on one skid stays whole on it.',
+            'Bag lines share poly tube bags (150 lb cap, bundle width + height within 19 inches) unless the whole order weighs 390 lbs or more — then bag lines go in a crate instead.',
+            'Crate lines share crates (1,960 lbs of material, 25 by 23.5 inch cross-section) and stay whole when they fit; only a line that fits nowhere whole is split.',
+            'Box lines still pack one line at a time. Shipped weight includes skid and crate tare.',
+          ] },
+        ],
+      },
+      daily: {
+        title: 'Daily Shipments',
+        sections: [
+          { heading: 'What you see', bullets: [
+            'Recent shipments, newest promised date first: promise date, tracking, SO number, customer, part, quantity, ship via, weight, die, and color.',
+          ] },
+          { heading: 'What you can click', bullets: [
+            'Search by SO number, customer, part, tracking, PO, or date.',
+            'The date picker shows only shipments promised on that date (× Clear date removes it).',
+          ] },
+          { heading: 'What you can learn', bullets: [
+            'Dates shown are promise dates.',
+            'SO numbers here are display-only — to open an order, click its SO number on the Open Orders tab.',
+          ] },
+        ],
+      },
+    };
+
     function App() {
       const [data, setData] = useState(null);
       const [loading, setLoading] = useState(true);
@@ -668,6 +803,8 @@
       // the Packaging Tool Settings tab, kept available as a link
       // now that the single-item Packaging tab is gone.
       const [showBoxList, setShowBoxList] = useState(false);
+      // Page help modal: content follows the active tab (PAGE_HELP).
+      const [showPageHelp, setShowPageHelp] = useState(false);
       // Order card modal: set to an order from openOrdersList when its
       // SO number is clicked, anywhere order numbers appear.
       const [selectedOrder, setSelectedOrder] = useState(null);
@@ -1934,6 +2071,13 @@
                     >
                       <RefreshCw className={`w-3 h-3 ${refreshing ? 'animate-spin' : ''}`} />
                       {refreshing ? 'Updating…' : 'Refresh data'}
+                    </button>
+                    <button
+                      onClick={() => setShowPageHelp(true)}
+                      className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-50 border border-slate-200 text-slate-700 font-semibold hover:bg-slate-100 transition"
+                    >
+                      <Info className="w-3 h-3" />
+                      How to use this page
                     </button>
                     <span className="text-slate-500 font-medium">
                       {lastUpdated
@@ -3467,6 +3611,35 @@
               </div>
             );
           })()}
+          {/* Page Help Modal: explains the active tab — what it shows,
+              what is clickable, and what information it gives. */}
+          {showPageHelp && PAGE_HELP[activeTab] && (
+            <div
+              className="fixed inset-0 bg-black/50 flex items-start justify-center p-4 pt-10 z-[60] overflow-y-auto"
+              onClick={() => setShowPageHelp(false)}
+            >
+              <div
+                className="bg-white rounded-2xl shadow-xl max-w-2xl w-full p-6 space-y-4"
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="flex items-start justify-between border-b border-slate-200 pb-4">
+                  <h2 className="text-lg font-extrabold text-slate-900">How to use this page: {PAGE_HELP[activeTab].title}</h2>
+                  <button onClick={() => setShowPageHelp(false)} className="text-xs font-bold text-slate-400 hover:text-red-600">Close</button>
+                </div>
+                {PAGE_HELP[activeTab].sections.map((s) => (
+                  <div key={s.heading}>
+                    <h3 className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">{s.heading}</h3>
+                    <ul className="mt-1.5 space-y-1.5 text-xs font-medium text-slate-700 list-disc pl-5">
+                      {s.bullets.map((b, i) => (
+                        <li key={i}>{b}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+                <p className="text-[11px] text-slate-400 border-t border-slate-200 pt-3">Data refreshes every 30 minutes; Refresh data in the header reloads it now. If a tab looks empty or stale, check the header for an update-failed warning.</p>
+              </div>
+            </div>
+          )}
           {/* Box List Modal: the box sizes from the Packaging Tool
               Settings tab, opened from the Packaging Estimator link. */}
           {showBoxList && (
