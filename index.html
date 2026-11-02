@@ -2734,6 +2734,53 @@
                           </div>
                         </div>
 
+                        {/* Die queue ahead of this order, spelled out in the rationale */}
+                        <div className="pt-3 border-t border-slate-200/80 space-y-2">
+                          <p className="font-bold text-slate-700 text-xs">
+                            RUN AHEAD OF THIS ORDER — DIE QUEUE ({selectedItem?.inferredDie})
+                          </p>
+                          {dieQueueOrders.length === 0 ? (
+                            <p className="text-xs text-slate-600">
+                              No other orders are in the queue for this die ahead of this inquiry.
+                            </p>
+                          ) : (
+                            <>
+                              <p className="text-xs text-slate-600">
+                                {calc.is100InStock
+                                  ? 'These orders are also in the queue for this die, but they add no time to this inquiry because this quantity is fully in stock.'
+                                  : 'These orders are already in the queue for this die and run before this inquiry. Their run time is included in the lead time above.'}
+                              </p>
+                              <ul className="space-y-1 text-xs text-slate-600">
+                                {dieQueueOrders.map((ord, idx) => (
+                                  <li key={ord.id || idx} className="flex flex-wrap gap-x-2">
+                                    <span className="font-bold text-slate-800">SO {ord.soNum}</span>
+                                    <span>{ord.newPartNum || ord.itemPart}</span>
+                                    <span>{ord.customer}</span>
+                                    <span>{ord.qty.toLocaleString()} {ord.uom || selectedItem?.uom}</span>
+                                    <span>promise {ord.promiseDate}</span>
+                                    <span>{ord.status || 'In Queue'}</span>
+                                    <span className="text-slate-500">
+                                      {selectedDieRate && selectedDieRate.inHr
+                                        ? `— ${((ord.qty * 12) / selectedDieRate.inHr).toFixed(1)} hrs run time`
+                                        : '— run time n/a (no rate)'}
+                                    </span>
+                                  </li>
+                                ))}
+                              </ul>
+                              {!calc.is100InStock && (
+                                <p className="text-xs text-slate-600">
+                                  Queue total: {calc.queueQty.toLocaleString()} {selectedItem?.uom}
+                                  {(selectedItem?.qtyOnOrder || 0) > 0 && (
+                                    <span> less this SKU&apos;s on-order {Number(selectedItem.qtyOnOrder).toLocaleString()} {selectedItem?.uom} (already in physical stock, so excluded from machine time)</span>
+                                  )}
+                                  {' = '}{calc.queueQtyForRun.toLocaleString()} {selectedItem?.uom} counted
+                                  {' = '}{calc.queueRunHours.toFixed(1)} hrs of queue run time included in the lead time.
+                                </p>
+                              )}
+                            </>
+                          )}
+                        </div>
+
                         {/* Bottom Gray Detailed Logic Container */}
                         <div className="p-4 bg-slate-50 rounded-xl border border-slate-200/80 space-y-2 text-xs">
                           <div className="flex items-center justify-between">
