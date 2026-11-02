@@ -1851,23 +1851,61 @@
 
         const deficitQty = Math.max(0, requested - available);
         const inHr = selectedDieRate ? selectedDieRate.inHr : null;
-        // Run time covers the deficit PLUS the die queue already in OOR:
-        // those orders run before this one on the same die, so their run
-        // time delays this order too. inHr is the RatesByProfile average
-        // in inches per hour, so run hours = qty ft x 12 in/ft / inHr.
-        // Queue qty is summed as-is from OOR (the same total the queue
-        // table shows); it does not apply when the order is 100% in
-        // stock, because then nothing needs to run at all. One
-        // exception: this SKU's own on-order qty is excluded from the
-        // run-time queue, because those units are already produced and
-        // sitting in physical stock — that is exactly why Sales
-        // "available" is net of "qty on order" (proven 2026-10-28).
-        // Charging them as machine time again would double-count them,
-        // the same bug the Full Sheet tab had with stock. The deficit,
-        // coverage, and balance figures above stay net-based and are
-        // already correct; only the machine-time queue changes.
+        // Run time covers the deficit PLUS the die queue already in OOR
+        // that still needs to run: those orders run before this one on
+        // the same die, so their run time delays this order too. inHr
+        // is the RatesByProfile average in inches per hour, so run
+        // hours = qty ft x 12 in/ft / inHr. Queue run time does not
+        // apply when the order is 100% in stock, because then nothing
+        // needs to run at all. Two kinds of queue order need no run
+        // time (Nathan, 2026-11-02): (1) already fulfilled orders —
+        // Shipped, Packaged, or Boxed — which are already extruded;
+        // (2) portions already covered by stock for that part. Stock
+        // is consumed in queue order, per part, so earlier orders for
+        // the same part use the stock first. For this inquiry's own
+        // part, the cover pool is its qty on order (units already
+        // produced and sitting in physical stock — that is exactly
+        // why Sales "available" is net of "qty on order", proven
+        // 2026-10-28; the available stock itself is already used by
+        // the deficit calculation above, so it is not counted again
+        // here). For any other part, the pool is its physical stock
+        // (qty available + qty on order). Charging already-produced
+        // or stock-covered units as machine time again would
+        // double-count them, the same bug the Full Sheet tab had
+        // with stock. On Hold orders still count: they still need to
+        // run once released.
         const queueQty = dieQueueOrders.reduce((sum, o) => sum + (o.qty || 0), 0);
-        const queueQtyForRun = Math.max(0, queueQty - (selectedItem.qtyOnOrder || 0));
+        const inventoryByPart = {};
+        (inventoryList || []).forEach((inv) => {
+          if (inv.partNumber) inventoryByPart[inv.partNumber.toUpperCase()] = inv;
+        });
+        const inquiryPartKey = (selectedItem.partNumber || '').toUpperCase();
+        const stockPoolByPart = {};
+        let queueExcludedFulfilledQty = 0;
+        let queueExcludedStockQty = 0;
+        const queueDetails = dieQueueOrders.map((ord) => {
+          const qty = ord.qty || 0;
+          const partKey = (ord.newPartNum || ord.itemPart || '').toUpperCase();
+          const isFulfilled = ['Shipped', 'Packaged', 'Boxed'].includes(ord.status);
+          if (isFulfilled) {
+            queueExcludedFulfilledQty += qty;
+            return { ...ord, runQty: 0, coveredQty: 0, isFulfilled: true };
+          }
+          if (stockPoolByPart[partKey] === undefined) {
+            const inv = inventoryByPart[partKey];
+            const pool = inv
+              ? (partKey === inquiryPartKey
+                ? (inv.qtyOnOrder || 0)
+                : Math.max(0, (inv.qtyAvailable || 0) + (inv.qtyOnOrder || 0)))
+              : 0;
+            stockPoolByPart[partKey] = Math.max(0, pool);
+          }
+          const coveredQty = Math.min(qty, stockPoolByPart[partKey]);
+          stockPoolByPart[partKey] -= coveredQty;
+          queueExcludedStockQty += coveredQty;
+          return { ...ord, runQty: qty - coveredQty, coveredQty, isFulfilled: false };
+        });
+        const queueQtyForRun = queueDetails.reduce((sum, d) => sum + (d.runQty || 0), 0);
         const queueRunHours = inHr ? (queueQtyForRun * 12) / inHr : 0;
         const totalRunQty = deficitQty + queueQtyForRun;
         const machineRunHours = inHr ? (totalRunQty * 12) / inHr : 0;
@@ -1907,6 +1945,9 @@
           queueQty,
           queueQtyForRun,
           queueRunHours,
+          queueExcludedFulfilledQty,
+          queueExcludedStockQty,
+          queueDetails,
           rateMissing,
           wholeDaysMin,
           wholeDaysMax,
@@ -1916,7 +1957,7 @@
           continuousDays,
           batchWeight
         };
-      }, [selectedItem, inquiredQty, quoteAsOfDate, isRushOrder, liveInspectionInfo, selectedDieRate, dieQueueOrders]);
+      }, [selectedItem, inquiredQty, quoteAsOfDate, isRushOrder, liveInspectionInfo, selectedDieRate, dieQueueOrders, inventoryList]);
 
       // =============== FULL SHEET CALCULATOR ===============
       // Finished sheet stock comes from Sales 2.0 (FS- rows, EACH).
@@ -2748,10 +2789,10 @@
                               <p className="text-xs text-slate-600">
                                 {calc.is100InStock
                                   ? 'These orders are also in the queue for this die, but they add no time to this inquiry because this quantity is fully in stock.'
-                                  : 'These orders are already in the queue for this die and run before this inquiry. Their run time is included in the lead time above.'}
+                                  : 'These orders are already in the queue for this die and run before this inquiry. Orders that are already Shipped, Packaged, or Boxed, and portions already covered by stock for that part, count 0 hours and are marked as such below.'}
                               </p>
                               <ul className="space-y-1 text-xs text-slate-600">
-                                {dieQueueOrders.map((ord, idx) => (
+                                {(calc.queueDetails || dieQueueOrders).map((ord, idx) => (
                                   <li key={ord.id || idx} className="flex flex-wrap gap-x-2">
                                     <span className="font-bold text-slate-800">SO {ord.soNum}</span>
                                     <span>{ord.newPartNum || ord.itemPart}</span>
@@ -2760,9 +2801,17 @@
                                     <span>promise {ord.promiseDate}</span>
                                     <span>{ord.status || 'In Queue'}</span>
                                     <span className="text-slate-500">
-                                      {selectedDieRate && selectedDieRate.inHr
-                                        ? `— ${((ord.qty * 12) / selectedDieRate.inHr).toFixed(1)} hrs run time`
-                                        : '— run time n/a (no rate)'}
+                                      {calc.is100InStock
+                                        ? '— not counted (fully in stock)'
+                                        : ord.isFulfilled
+                                          ? `— 0 hrs counted (already ${ord.status})`
+                                          : !selectedDieRate || !selectedDieRate.inHr
+                                            ? '— run time n/a (no rate)'
+                                            : (ord.coveredQty || 0) > 0 && (ord.runQty || 0) === 0
+                                              ? '— 0 hrs counted (fully covered by stock)'
+                                              : (ord.coveredQty || 0) > 0
+                                                ? `— ${((ord.runQty * 12) / selectedDieRate.inHr).toFixed(1)} hrs run time (${ord.coveredQty.toLocaleString()} {ord.uom || selectedItem?.uom} covered by stock)`
+                                                : `— ${((ord.runQty * 12) / selectedDieRate.inHr).toFixed(1)} hrs run time`}
                                     </span>
                                   </li>
                                 ))}
@@ -2770,8 +2819,11 @@
                               {!calc.is100InStock && (
                                 <p className="text-xs text-slate-600">
                                   Queue total: {calc.queueQty.toLocaleString()} {selectedItem?.uom}
-                                  {(selectedItem?.qtyOnOrder || 0) > 0 && (
-                                    <span> less this SKU&apos;s on-order {Number(selectedItem.qtyOnOrder).toLocaleString()} {selectedItem?.uom} (already in physical stock, so excluded from machine time)</span>
+                                  {calc.queueExcludedFulfilledQty > 0 && (
+                                    <span> less {calc.queueExcludedFulfilledQty.toLocaleString()} {selectedItem?.uom} already Shipped, Packaged, or Boxed</span>
+                                  )}
+                                  {calc.queueExcludedStockQty > 0 && (
+                                    <span> less {calc.queueExcludedStockQty.toLocaleString()} {selectedItem?.uom} already covered by stock</span>
                                   )}
                                   {' = '}{calc.queueQtyForRun.toLocaleString()} {selectedItem?.uom} counted
                                   {' = '}{calc.queueRunHours.toFixed(1)} hrs of queue run time included in the lead time.
@@ -2877,7 +2929,7 @@
                             </div>
                             <div className="p-2 bg-white/80 rounded-lg border border-purple-100">
                               <span className="font-bold text-slate-700 block">Active Line Run:</span>
-                              <span className="text-slate-500">{calc.machineRunHours.toFixed(1)} hrs ({calc.deficitQty.toLocaleString()} ft deficit + {calc.queueQtyForRun.toLocaleString()} ft die queue ahead, this SKU's on-order excluded — already in stock) × 12 in/ft ÷ {selectedDieRate && selectedDieRate.inHr ? `${selectedDieRate.inHr} in/hr` : 'no rate'}</span>
+                              <span className="text-slate-500">{calc.machineRunHours.toFixed(1)} hrs ({calc.deficitQty.toLocaleString()} ft deficit + {calc.queueQtyForRun.toLocaleString()} ft die queue to run, after excluding fulfilled and stock-covered orders) × 12 in/ft ÷ {selectedDieRate && selectedDieRate.inHr ? `${selectedDieRate.inHr} in/hr` : 'no rate'}</span>
                             </div>
                             <div className="p-2 bg-white/80 rounded-lg border border-purple-100">
                               <span className="font-bold text-slate-700 block">24/7 Weekend Running:</span>
